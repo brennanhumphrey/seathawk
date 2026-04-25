@@ -26,7 +26,7 @@ func (f *fakeStudentDataClient) StudentData(ctx context.Context, authtoken strin
 
 func TestImportValidSession(t *testing.T) {
 	db := newServiceTestDB(t)
-	client := &fakeStudentDataClient{data: studentData("person", "proof")}
+	client := &fakeStudentDataClient{data: studentData("person", "fresh-proof")}
 	now := fixedNow()
 	svc := Service{DB: db, VTClient: client, Now: func() time.Time { return now }}
 
@@ -34,7 +34,7 @@ func TestImportValidSession(t *testing.T) {
 		CapturedAt:  now.Add(-time.Hour),
 		Authtoken:   "token",
 		PersID:      "person",
-		PersIDProof: "proof",
+		PersIDProof: "captured-proof",
 	})
 	if err != nil {
 		t.Fatalf("Import returned error: %v", err)
@@ -45,7 +45,7 @@ func TestImportValidSession(t *testing.T) {
 	if got.Status != StatusValid || !got.LastValidatedAt.Valid {
 		t.Fatalf("unexpected stored session: %+v", got)
 	}
-	if got.Authtoken != "token" || got.PersID != "person" || got.PersIDProof != "proof" {
+	if got.Authtoken != "token" || got.PersID != "person" || got.PersIDProof != "fresh-proof" {
 		t.Fatalf("unexpected credentials in session: %+v", got)
 	}
 }
@@ -82,7 +82,7 @@ func TestImportValidationErrorsDoNotSave(t *testing.T) {
 		{name: "missing pers id", payload: CapturedCredentials{Authtoken: "token", PersIDProof: "proof"}, client: &fakeStudentDataClient{data: studentData("person", "proof")}},
 		{name: "missing pers proof", payload: CapturedCredentials{Authtoken: "token", PersID: "person"}, client: &fakeStudentDataClient{data: studentData("person", "proof")}},
 		{name: "mismatched pers id", payload: validPayload(), client: &fakeStudentDataClient{data: studentData("other", "proof")}},
-		{name: "mismatched pers proof", payload: validPayload(), client: &fakeStudentDataClient{data: studentData("person", "other")}},
+		{name: "missing fresh pers proof", payload: validPayload(), client: &fakeStudentDataClient{data: studentData("person", "")}},
 		{name: "vt error", payload: validPayload(), client: &fakeStudentDataClient{err: errors.New("upstream failed")}},
 	}
 

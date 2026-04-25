@@ -62,8 +62,8 @@ func (s Service) Import(ctx context.Context, payload CapturedCredentials) (store
 	if studentData.Pers.ID != payload.PersID {
 		return store.Session{}, fmt.Errorf("imported session identity does not match VT studentdata")
 	}
-	if studentData.Pers.IDProof != payload.PersIDProof {
-		return store.Session{}, fmt.Errorf("imported session proof does not match VT studentdata")
+	if studentData.Pers.IDProof == "" {
+		return store.Session{}, fmt.Errorf("VT studentdata did not include a session proof")
 	}
 
 	now := s.now()
@@ -77,7 +77,7 @@ func (s Service) Import(ctx context.Context, payload CapturedCredentials) (store
 	session := store.Session{
 		Authtoken:       payload.Authtoken,
 		PersID:          payload.PersID,
-		PersIDProof:     payload.PersIDProof,
+		PersIDProof:     studentData.Pers.IDProof,
 		CapturedAt:      capturedAt.UTC(),
 		LastValidatedAt: sql.NullTime{Time: now, Valid: true},
 		Status:          StatusValid,
