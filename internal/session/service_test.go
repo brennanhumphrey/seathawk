@@ -124,7 +124,7 @@ func TestValidateCurrentValid(t *testing.T) {
 	saveStoredSession(t, db, "unknown", sql.NullTime{})
 	svc := Service{
 		DB:       db,
-		VTClient: &fakeStudentDataClient{data: studentData("person", "proof")},
+		VTClient: &fakeStudentDataClient{data: studentData("person", "fresh-proof")},
 		Now:      func() time.Time { return now },
 	}
 
@@ -134,6 +134,9 @@ func TestValidateCurrentValid(t *testing.T) {
 	}
 	if got.Status != StatusValid || !got.LastValidatedAt.Valid {
 		t.Fatalf("unexpected session: %+v", got)
+	}
+	if got.PersIDProof != "fresh-proof" {
+		t.Fatalf("PersIDProof = %q, want fresh-proof", got.PersIDProof)
 	}
 }
 
@@ -162,6 +165,24 @@ func TestValidateCurrentInvalidOnMismatch(t *testing.T) {
 	svc := Service{
 		DB:       db,
 		VTClient: &fakeStudentDataClient{data: studentData("other", "proof")},
+		Now:      fixedNow,
+	}
+
+	got, err := svc.ValidateCurrent(context.Background())
+	if err == nil {
+		t.Fatal("ValidateCurrent returned nil error")
+	}
+	if got.Status != StatusInvalid {
+		t.Fatalf("Status = %q, want invalid", got.Status)
+	}
+}
+
+func TestValidateCurrentInvalidOnMissingFreshProof(t *testing.T) {
+	db := newServiceTestDB(t)
+	saveStoredSession(t, db, "valid", sql.NullTime{})
+	svc := Service{
+		DB:       db,
+		VTClient: &fakeStudentDataClient{data: studentData("person", "")},
 		Now:      fixedNow,
 	}
 

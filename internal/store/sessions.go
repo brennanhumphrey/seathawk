@@ -91,13 +91,18 @@ func CurrentSession(ctx context.Context, db *sql.DB) (Session, error) {
 // UpdateSessionValidation updates validation metadata for one stored session.
 //
 // Validation modifies the selected row in-place instead of appending a new row;
-// importing credentials is what creates session history.
-func UpdateSessionValidation(ctx context.Context, db *sql.DB, id int64, status string, validatedAt time.Time) error {
+// importing credentials is what creates session history. If persIDProof is
+// non-empty, it also refreshes the stored proof because VT may rotate idProof
+// between studentdata calls.
+func UpdateSessionValidation(ctx context.Context, db *sql.DB, id int64, status string, validatedAt time.Time, persIDProof string) error {
 	result, err := db.ExecContext(ctx, `
 		UPDATE sessions
-		SET status = ?, last_validated_at = ?
+		SET
+			status = ?,
+			last_validated_at = ?,
+			pers_id_proof = COALESCE(NULLIF(?, ''), pers_id_proof)
 		WHERE id = ?
-	`, status, validatedAt.UTC(), id)
+	`, status, validatedAt.UTC(), persIDProof, id)
 	if err != nil {
 		return fmt.Errorf("update session validation: %w", err)
 	}

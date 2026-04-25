@@ -100,7 +100,7 @@ func TestUpdateSessionValidation(t *testing.T) {
 	}
 
 	validatedAt := now.Add(time.Hour)
-	if err := UpdateSessionValidation(ctx, db, current.ID, "invalid", validatedAt); err != nil {
+	if err := UpdateSessionValidation(ctx, db, current.ID, "invalid", validatedAt, "fresh-proof"); err != nil {
 		t.Fatalf("UpdateSessionValidation returned error: %v", err)
 	}
 
@@ -110,6 +110,9 @@ func TestUpdateSessionValidation(t *testing.T) {
 	}
 	if got.Status != "invalid" {
 		t.Fatalf("Status = %q, want invalid", got.Status)
+	}
+	if got.PersIDProof != "fresh-proof" {
+		t.Fatalf("PersIDProof = %q, want fresh-proof", got.PersIDProof)
 	}
 	if !got.LastValidatedAt.Valid {
 		t.Fatal("LastValidatedAt is invalid")

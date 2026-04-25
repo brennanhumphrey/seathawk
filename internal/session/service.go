@@ -101,13 +101,16 @@ func (s Service) ValidateCurrent(ctx context.Context) (store.Session, error) {
 	if err != nil {
 		// Preserve the row for audit/history, but mark it unusable for future
 		// workflows until the user imports or validates fresh credentials.
-		return s.markCurrent(ctx, current, StatusInvalid, now, fmt.Errorf("validate stored session: %w", err))
+		return s.markCurrent(ctx, current, StatusInvalid, now, "", fmt.Errorf("validate stored session: %w", err))
 	}
-	if studentData.Pers.ID != current.PersID || studentData.Pers.IDProof != current.PersIDProof {
-		return s.markCurrent(ctx, current, StatusInvalid, now, fmt.Errorf("stored session no longer matches VT studentdata"))
+	if studentData.Pers.ID != current.PersID {
+		return s.markCurrent(ctx, current, StatusInvalid, now, "", fmt.Errorf("stored session identity no longer matches VT studentdata"))
+	}
+	if studentData.Pers.IDProof == "" {
+		return s.markCurrent(ctx, current, StatusInvalid, now, "", fmt.Errorf("VT studentdata did not include a session proof"))
 	}
 
-	return s.markCurrent(ctx, current, StatusValid, now, nil)
+	return s.markCurrent(ctx, current, StatusValid, now, studentData.Pers.IDProof, nil)
 }
 
 // Current returns the newest stored session without contacting VT.
@@ -115,8 +118,8 @@ func (s Service) Current(ctx context.Context) (store.Session, error) {
 	return store.CurrentSession(ctx, s.DB)
 }
 
-func (s Service) markCurrent(ctx context.Context, current store.Session, status string, at time.Time, cause error) (store.Session, error) {
-	if err := store.UpdateSessionValidation(ctx, s.DB, current.ID, status, at); err != nil {
+func (s Service) markCurrent(ctx context.Context, current store.Session, status string, at time.Time, persIDProof string, cause error) (store.Session, error) {
+	if err := store.UpdateSessionValidation(ctx, s.DB, current.ID, status, at, persIDProof); err != nil {
 		if cause != nil {
 			return store.Session{}, fmt.Errorf("%v; also failed to update session status: %w", cause, err)
 		}
