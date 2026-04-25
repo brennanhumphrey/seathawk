@@ -1,0 +1,38 @@
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version TEXT PRIMARY KEY,
+  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  authtoken TEXT NOT NULL,
+  pers_id TEXT NOT NULL,
+  pers_id_proof TEXT NOT NULL,
+  captured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_validated_at DATETIME,
+  status TEXT NOT NULL DEFAULT 'unknown'
+);
+
+CREATE TABLE IF NOT EXISTS watches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  term TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  add_crn TEXT NOT NULL,
+  drop_crn TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  last_seen_stat TEXT,
+  next_poll_at DATETIME,
+  last_attempt_at DATETIME,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  watch_id INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  outcome_kind TEXT NOT NULL,
+  raw_response TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (watch_id) REFERENCES watches(id)
+);
