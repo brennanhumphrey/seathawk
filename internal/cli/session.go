@@ -29,7 +29,7 @@ func newSessionCmd() *cobra.Command {
 func newSessionImportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "import <path|->",
-		Short: "Import and validate captured VT credentials",
+		Short: "Import and validate a captured VT authtoken",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The bookmarklet copies JSON; accepting "-" lets users paste through

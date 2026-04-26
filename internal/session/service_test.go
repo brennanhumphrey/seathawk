@@ -31,10 +31,8 @@ func TestImportValidSession(t *testing.T) {
 	svc := Service{DB: db, VTClient: client, Now: func() time.Time { return now }}
 
 	got, err := svc.Import(context.Background(), CapturedCredentials{
-		CapturedAt:  now.Add(-time.Hour),
-		Authtoken:   "token",
-		PersID:      "person",
-		PersIDProof: "captured-proof",
+		CapturedAt: now.Add(-time.Hour),
+		Authtoken:  "token",
 	})
 	if err != nil {
 		t.Fatalf("Import returned error: %v", err)
@@ -60,9 +58,7 @@ func TestImportUsesNowWhenCapturedAtMissing(t *testing.T) {
 	}
 
 	got, err := svc.Import(context.Background(), CapturedCredentials{
-		Authtoken:   "token",
-		PersID:      "person",
-		PersIDProof: "proof",
+		Authtoken: "token",
 	})
 	if err != nil {
 		t.Fatalf("Import returned error: %v", err)
@@ -78,10 +74,8 @@ func TestImportValidationErrorsDoNotSave(t *testing.T) {
 		payload CapturedCredentials
 		client  *fakeStudentDataClient
 	}{
-		{name: "missing authtoken", payload: CapturedCredentials{PersID: "person", PersIDProof: "proof"}, client: &fakeStudentDataClient{data: studentData("person", "proof")}},
-		{name: "missing pers id", payload: CapturedCredentials{Authtoken: "token", PersIDProof: "proof"}, client: &fakeStudentDataClient{data: studentData("person", "proof")}},
-		{name: "missing pers proof", payload: CapturedCredentials{Authtoken: "token", PersID: "person"}, client: &fakeStudentDataClient{data: studentData("person", "proof")}},
-		{name: "mismatched pers id", payload: validPayload(), client: &fakeStudentDataClient{data: studentData("other", "proof")}},
+		{name: "missing authtoken", payload: CapturedCredentials{}, client: &fakeStudentDataClient{data: studentData("person", "proof")}},
+		{name: "missing studentdata pers id", payload: validPayload(), client: &fakeStudentDataClient{data: studentData("", "proof")}},
 		{name: "missing fresh pers proof", payload: validPayload(), client: &fakeStudentDataClient{data: studentData("person", "")}},
 		{name: "vt error", payload: validPayload(), client: &fakeStudentDataClient{err: errors.New("upstream failed")}},
 	}
@@ -109,12 +103,33 @@ func TestImportValidationErrorsDoNotSave(t *testing.T) {
 func TestImportMissingFieldsDoNotCallVT(t *testing.T) {
 	client := &fakeStudentDataClient{data: studentData("person", "proof")}
 	svc := Service{DB: newServiceTestDB(t), VTClient: client, Now: fixedNow}
-	_, err := svc.Import(context.Background(), CapturedCredentials{PersID: "person", PersIDProof: "proof"})
+	_, err := svc.Import(context.Background(), CapturedCredentials{})
 	if err == nil {
 		t.Fatal("Import returned nil error")
 	}
 	if client.calls != 0 {
 		t.Fatalf("StudentData calls = %d, want 0", client.calls)
+	}
+}
+
+func TestImportIgnoresLegacyCapturedIdentityFields(t *testing.T) {
+	db := newServiceTestDB(t)
+	svc := Service{
+		DB:       db,
+		VTClient: &fakeStudentDataClient{data: studentData("studentdata-person", "studentdata-proof")},
+		Now:      fixedNow,
+	}
+
+	got, err := svc.Import(context.Background(), CapturedCredentials{
+		Authtoken:   "token",
+		PersID:      "stale-captured-person",
+		PersIDProof: "stale-captured-proof",
+	})
+	if err != nil {
+		t.Fatalf("Import returned error: %v", err)
+	}
+	if got.PersID != "studentdata-person" || got.PersIDProof != "studentdata-proof" {
+		t.Fatalf("stored legacy captured identity instead of studentdata identity: %+v", got)
 	}
 }
 
@@ -197,9 +212,7 @@ func TestValidateCurrentInvalidOnMissingFreshProof(t *testing.T) {
 
 func validPayload() CapturedCredentials {
 	return CapturedCredentials{
-		Authtoken:   "raw-token-secret",
-		PersID:      "raw-person-secret",
-		PersIDProof: "raw-proof-secret",
+		Authtoken: "raw-token-secret",
 	}
 }
 

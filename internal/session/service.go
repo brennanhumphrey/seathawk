@@ -1,8 +1,8 @@
 // Package session owns the credential import and validation workflow.
 //
-// It sits between CLI code, the VT client, and SQLite persistence: captured
-// credentials are never trusted until studentdata confirms they match the
-// authenticated VT session.
+// It sits between CLI code, the VT client, and SQLite persistence. The browser
+// only needs to capture authtoken; studentdata is the trusted source for the
+// identity/proof fields SeatHawk stores for later registration calls.
 package session
 
 import (
@@ -22,8 +22,11 @@ const (
 
 // CapturedCredentials is the JSON shape copied from the VT credential bookmarklet.
 type CapturedCredentials struct {
-	CapturedAt  time.Time               `json:"captured_at"`
-	Authtoken   string                  `json:"authtoken"`
+	CapturedAt time.Time `json:"captured_at"`
+	Authtoken  string    `json:"authtoken"`
+
+	// Legacy bookmarklets copied these fields too. Import deliberately ignores
+	// them because idProof may rotate and studentdata is the authoritative source.
 	PersID      string                  `json:"pers_id"`
 	PersIDProof string                  `json:"pers_id_proof"`
 	Name        string                  `json:"name"`
@@ -43,24 +46,18 @@ type Service struct {
 	Now func() time.Time
 }
 
-// Import validates captured credentials against VT and stores them as the newest session.
+// Import validates the captured authtoken and stores the derived VT session fields.
 func (s Service) Import(ctx context.Context, payload CapturedCredentials) (store.Session, error) {
 	if payload.Authtoken == "" {
 		return store.Session{}, fmt.Errorf("authtoken is required")
-	}
-	if payload.PersID == "" {
-		return store.Session{}, fmt.Errorf("pers_id is required")
-	}
-	if payload.PersIDProof == "" {
-		return store.Session{}, fmt.Errorf("pers_id_proof is required")
 	}
 
 	studentData, err := s.client().StudentData(ctx, payload.Authtoken)
 	if err != nil {
 		return store.Session{}, fmt.Errorf("validate imported session: %w", err)
 	}
-	if studentData.Pers.ID != payload.PersID {
-		return store.Session{}, fmt.Errorf("imported session identity does not match VT studentdata")
+	if studentData.Pers.ID == "" {
+		return store.Session{}, fmt.Errorf("VT studentdata did not include a session identity")
 	}
 	if studentData.Pers.IDProof == "" {
 		return store.Session{}, fmt.Errorf("VT studentdata did not include a session proof")
@@ -76,7 +73,7 @@ func (s Service) Import(ctx context.Context, payload CapturedCredentials) (store
 
 	session := store.Session{
 		Authtoken:       payload.Authtoken,
-		PersID:          payload.PersID,
+		PersID:          studentData.Pers.ID,
 		PersIDProof:     studentData.Pers.IDProof,
 		CapturedAt:      capturedAt.UTC(),
 		LastValidatedAt: sql.NullTime{Time: now, Valid: true},

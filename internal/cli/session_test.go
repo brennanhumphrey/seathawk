@@ -28,6 +28,17 @@ func TestMaskSecret(t *testing.T) {
 }
 
 func TestReadCapturedCredentialsFromStdin(t *testing.T) {
+	input := `{"authtoken":"token"}`
+	got, err := readCapturedCredentials("-", strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("readCapturedCredentials returned error: %v", err)
+	}
+	if got.Authtoken != "token" {
+		t.Fatalf("unexpected payload: %+v", got)
+	}
+}
+
+func TestReadCapturedCredentialsAllowsLegacyFields(t *testing.T) {
 	input := `{"authtoken":"token","pers_id":"person","pers_id_proof":"proof"}`
 	got, err := readCapturedCredentials("-", strings.NewReader(input))
 	if err != nil {
