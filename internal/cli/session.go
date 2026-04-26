@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/brennanhumphrey/seathawk/internal/config"
 	"github.com/brennanhumphrey/seathawk/internal/session"
 	"github.com/brennanhumphrey/seathawk/internal/store"
 	"github.com/brennanhumphrey/seathawk/internal/vt"
@@ -102,22 +101,9 @@ func newSessionShowCmd() *cobra.Command {
 }
 
 func newSessionService(ctx context.Context) (session.Service, func(), error) {
-	cfg, err := config.Load(configPath)
+	_, db, cleanup, err := openAppDB(ctx)
 	if err != nil {
-		return session.Service{}, nil, fmt.Errorf("load config: %w", err)
-	}
-
-	db, err := store.Open(ctx, cfg.DatabasePath)
-	if err != nil {
-		return session.Service{}, nil, fmt.Errorf("open database: %w", err)
-	}
-	cleanup := func() {
-		_ = db.Close()
-	}
-
-	if err := store.Migrate(ctx, db); err != nil {
-		cleanup()
-		return session.Service{}, nil, fmt.Errorf("migrate database: %w", err)
+		return session.Service{}, nil, err
 	}
 
 	client, err := vt.NewClient(vt.ClientConfig{})
