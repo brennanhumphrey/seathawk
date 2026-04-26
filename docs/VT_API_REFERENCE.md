@@ -24,15 +24,15 @@ Empirically verified reference for Virginia Tech's registration API, derived fro
 
 **Confirmed empirically:** all sisproxy and shockabsorber operations work with `authtoken` alone. No `IDMSESSID` cookie is required. The reverse-engineered PDF that claimed `IDMSESSID + _pers` was mandatory was wrong for VT's token-auth configuration.
 
-### 2.2 The three credentials you need
+### 2.2 The credentials SeatHawk stores
 
 | Credential | Source (browser JS) | Stability | Purpose |
 |---|---|---|---|
 | `authtoken` | `sam.auth.token` | Session-stable, expires on logout or after ~24h | Authenticates most calls |
-| `_pers_id` | `sam.record.getProperty('pers').id` | Session-stable | Proves identity to shockabsorber |
-| `_pers_id_proof` | `sam.record.getProperty('pers').idProof` | May rotate between calls (safe to refresh) | Signed proof for shockabsorber |
+| `_pers_id` | `studentdata.pers.id` | Session-stable | Proves identity to shockabsorber |
+| `_pers_id_proof` | `studentdata.pers.idProof` | May rotate between calls (safe to refresh) | Signed proof for shockabsorber |
 
-All three can be extracted client-side by a bookmarklet running on classes.vt.edu after the user is logged in. You cannot forge these; they must be captured from a real authenticated session.
+The user only needs to capture `authtoken` from the logged-in browser session. SeatHawk calls `studentdata` during import and stores `_pers_id` plus `_pers_id_proof` from that response. This avoids relying on copied proof values that may already be stale.
 
 ### 2.3 Where credentials go in requests
 
@@ -723,30 +723,25 @@ An empty `actions` array means the ticket exists but the window has not yet open
 
 Numeric-string values. Observed: `10`, corresponds to undergraduate level within Banner's internal classification. Not usually needed by external tools but visible in the record.
 
-## 10. Bookmarklet: Capturing Credentials
+## 10. Bookmarklet: Capturing Authtoken
 
-A bookmarklet extracts credentials from the user's logged-in browser session. This is run once during initial "connect" flow.
+A bookmarklet extracts the VT authtoken from the user's logged-in browser session. This is run once during initial "connect" flow. SeatHawk derives the remaining stored credentials by calling `studentdata` during import.
 
 ### 10.1 Readable source
 
 ```javascript
 javascript:(async()=>{
   try {
-    const r = await fetch('/api/?page=sisproxy&action=studentdata&authtoken=' + sam.auth.token);
-    const t = await r.text();
-    const m = t.match(/^setRecord\(([\s\S]*)\)[;\s]*$/);
-    if (!m) throw new Error('failed to parse studentdata response');
-    const d = JSON.parse(m[1]);
+    const authtoken = typeof sam !== 'undefined' && sam.auth ? sam.auth.token : '';
+    if (!authtoken) {
+      throw new Error('VT authtoken not found; make sure you are logged in on classes.vt.edu');
+    }
     const creds = {
       captured_at: new Date().toISOString(),
-      authtoken: sam.auth.token,
-      pers_id: d.pers.id,
-      pers_id_proof: d.pers.idProof,
-      name: d.pers.fn,
-      reg_tickets: d.reg_tickets
+      authtoken
     };
     await navigator.clipboard.writeText(JSON.stringify(creds, null, 2));
-    alert('VT credentials copied to clipboard. Paste into the tool.');
+    alert('VT authtoken copied to clipboard. Paste into SeatHawk.');
   } catch (e) {
     alert('Capture failed: ' + e.message);
   }
@@ -763,17 +758,23 @@ javascript:(async()=>{
 - `sam.user.id()` → alias for `_pers_id`
 - `sam.user.getProperty('reg_windows')` or `sam.user.getProperty('reg_tickets')` → raw ticket data as in studentdata
 
-A tool can refresh `reg_tickets` by calling studentdata itself whenever needed (doesn't require re-running the bookmarklet).
+SeatHawk should not need to copy `_pers_id`, `_pers_id_proof`, or `reg_tickets` from the page. It can refresh all of those by calling `studentdata` with the captured authtoken whenever needed.
 
-### 10.3 Minification for deployment
+### 10.3 Copy-paste bookmarklet
 
-For production, minify the bookmarklet to a single line starting with `javascript:`. Users drag it to their bookmarks bar. Most browsers cap bookmarklet size at around 2000 characters; the above is well under.
+Save this as the bookmark URL:
+
+```javascript
+javascript:(async()=>{try{const t=typeof sam!='undefined'&&sam.auth?sam.auth.token:'';if(!t)throw new Error('VT authtoken not found; open the logged-in registration page and try again after it finishes loading');const j=JSON.stringify({captured_at:new Date().toISOString(),authtoken:t},null,2);if(typeof copy=='function'){copy(j);alert('VT authtoken copied to clipboard. Paste into SeatHawk.');return}try{await navigator.clipboard.writeText(j);alert('VT authtoken copied to clipboard. Paste into SeatHawk.')}catch(_){prompt('Copy this SeatHawk session JSON:',j)}}catch(e){alert('Capture failed: '+e.message)}})();
+```
+
+This bookmarklet intentionally does not call `studentdata`. It reads the same `sam.auth.token` value that works in the browser console, then SeatHawk calls `studentdata` during `session import`. That keeps the browser-side capture path small and avoids copying stale `idProof` values.
 
 ## 11. Security and Operational Notes
 
 ### 11.1 What the credentials can do
 
-Anyone with `authtoken` + `_pers_id` + `_pers_id_proof` can:
+Anyone with `authtoken` can fetch `studentdata`, derive `_pers_id` and `_pers_id_proof`, and then:
 - Read the full student record (registration history, current schedule, plans)
 - Add/remove from the student's cart
 - **Register or drop any course during an active registration window**
