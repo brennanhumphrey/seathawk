@@ -29,6 +29,7 @@ func newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newRunCmd())
 	cmd.AddCommand(newSessionCmd())
+	cmd.AddCommand(newWatchCmd())
 
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to config file")
 
