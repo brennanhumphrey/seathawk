@@ -1,0 +1,232 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// ErrNoWatch means no watch exists for the requested ID.
+var ErrNoWatch = errors.New("no watch found")
+
+// Watch is one durable user intent row from the watches table.
+//
+// The watch row is intentionally broader than the current Phase 5 CLI needs.
+// Term/Mode/AddCRN/DropCRN describe the user's desired future action. Active
+// lets the user pause that intent without deleting it. LastSeenStat,
+// NextPollAt, and LastAttemptAt are scheduler state for later phases, when the
+// daemon starts polling VT and attempting registration.
+type Watch struct {
+	ID            int64
+	Term          string
+	Mode          string // "add" or "swap"; stored explicitly so drop_crn is not the source of truth.
+	AddCRN        string
+	DropCRN       sql.NullString // Only valid for swap watches.
+	Active        bool
+	LastSeenStat  sql.NullString // Future fose section status, for example "A" or "C".
+	NextPollAt    sql.NullTime   // Future scheduler timestamp for the next read-only availability check.
+	LastAttemptAt sql.NullTime   // Future registration-attempt timestamp.
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// SaveWatch appends a new watch and returns the stored row.
+//
+// Store functions assume callers already made domain decisions. Validation such
+// as "swap watches need different add/drop CRNs" belongs in internal/watch, not
+// in this SQL layer.
+func SaveWatch(ctx context.Context, db *sql.DB, watch Watch) (Watch, error) {
+	result, err := db.ExecContext(ctx, `
+		INSERT INTO watches (
+			term,
+			mode,
+			add_crn,
+			drop_crn,
+			active,
+			last_seen_stat,
+			next_poll_at,
+			last_attempt_at,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		watch.Term,
+		watch.Mode,
+		watch.AddCRN,
+		nullStringValue(watch.DropCRN),
+		boolToInt(watch.Active),
+		nullStringValue(watch.LastSeenStat),
+		nullTimeValue(watch.NextPollAt),
+		nullTimeValue(watch.LastAttemptAt),
+		watch.CreatedAt.UTC(),
+		watch.UpdatedAt.UTC(),
+	)
+	if err != nil {
+		return Watch{}, fmt.Errorf("insert watch: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return Watch{}, fmt.Errorf("read inserted watch id: %w", err)
+	}
+	return WatchByID(ctx, db, id)
+}
+
+// ListWatches returns every stored watch in creation order.
+//
+// Disabled watches are intentionally included. "Inactive" means paused, not
+// forgotten, and hiding paused watches would make the CLI misleading.
+func ListWatches(ctx context.Context, db *sql.DB) ([]Watch, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+			id,
+			term,
+			mode,
+			add_crn,
+			drop_crn,
+			active,
+			last_seen_stat,
+			next_poll_at,
+			last_attempt_at,
+			created_at,
+			updated_at
+		FROM watches
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list watches: %w", err)
+	}
+	defer rows.Close()
+
+	var watches []Watch
+	for rows.Next() {
+		watch, err := scanWatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		watches = append(watches, watch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate watches: %w", err)
+	}
+	return watches, nil
+}
+
+// WatchByID returns one watch by primary key.
+func WatchByID(ctx context.Context, db *sql.DB, id int64) (Watch, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT
+			id,
+			term,
+			mode,
+			add_crn,
+			drop_crn,
+			active,
+			last_seen_stat,
+			next_poll_at,
+			last_attempt_at,
+			created_at,
+			updated_at
+		FROM watches
+		WHERE id = ?
+	`, id)
+
+	watch, err := scanWatch(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Watch{}, ErrNoWatch
+	}
+	if err != nil {
+		return Watch{}, fmt.Errorf("read watch: %w", err)
+	}
+	return watch, nil
+}
+
+// SetWatchActive updates whether a watch should be considered by future polling.
+func SetWatchActive(ctx context.Context, db *sql.DB, id int64, active bool, updatedAt time.Time) error {
+	result, err := db.ExecContext(ctx, `
+		UPDATE watches
+		SET
+			active = ?,
+			updated_at = ?
+		WHERE id = ?
+	`, boolToInt(active), updatedAt.UTC(), id)
+	if err != nil {
+		return fmt.Errorf("update watch active: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read watch active update count: %w", err)
+	}
+	if rows == 0 {
+		return ErrNoWatch
+	}
+	return nil
+}
+
+// DeleteWatch hard-deletes one watch row.
+//
+// This is acceptable while watches have no attempt history. Once attempts are
+// recorded, higher layers should prefer disabling or archiving so audit history
+// remains coherent.
+func DeleteWatch(ctx context.Context, db *sql.DB, id int64) error {
+	result, err := db.ExecContext(ctx, `DELETE FROM watches WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete watch: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read watch delete count: %w", err)
+	}
+	if rows == 0 {
+		return ErrNoWatch
+	}
+	return nil
+}
+
+type watchScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanWatch(scanner watchScanner) (Watch, error) {
+	var watch Watch
+	var active int
+	if err := scanner.Scan(
+		&watch.ID,
+		&watch.Term,
+		&watch.Mode,
+		&watch.AddCRN,
+		&watch.DropCRN,
+		&active,
+		&watch.LastSeenStat,
+		&watch.NextPollAt,
+		&watch.LastAttemptAt,
+		&watch.CreatedAt,
+		&watch.UpdatedAt,
+	); err != nil {
+		return Watch{}, err
+	}
+	watch.Active = intToBool(active)
+	return watch, nil
+}
+
+func nullStringValue(value sql.NullString) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.String
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func intToBool(value int) bool {
+	return value != 0
+}
