@@ -79,7 +79,7 @@ func SaveWatch(ctx context.Context, db *sql.DB, watch Watch) (Watch, error) {
 // Disabled watches are intentionally included. "Inactive" means paused, not
 // forgotten, and hiding paused watches would make the CLI misleading.
 func ListWatches(ctx context.Context, db *sql.DB) ([]Watch, error) {
-	rows, err := db.QueryContext(ctx, `
+	return listWatchesByQuery(ctx, db, `
 		SELECT
 			id,
 			term,
@@ -95,6 +95,53 @@ func ListWatches(ctx context.Context, db *sql.DB) ([]Watch, error) {
 		FROM watches
 		ORDER BY id ASC
 	`)
+}
+
+// ListActiveWatches returns every active watch in creation order.
+func ListActiveWatches(ctx context.Context, db *sql.DB) ([]Watch, error) {
+	return listWatchesByQuery(ctx, db, `
+		SELECT
+			id,
+			term,
+			mode,
+			add_crn,
+			drop_crn,
+			active,
+			last_seen_stat,
+			next_poll_at,
+			last_attempt_at,
+			created_at,
+			updated_at
+		FROM watches
+		WHERE active = 1
+		ORDER BY id ASC
+	`)
+}
+
+// ListDueActiveWatches returns active watches whose poll time has arrived.
+func ListDueActiveWatches(ctx context.Context, db *sql.DB, now time.Time) ([]Watch, error) {
+	return listWatchesByQuery(ctx, db, `
+		SELECT
+			id,
+			term,
+			mode,
+			add_crn,
+			drop_crn,
+			active,
+			last_seen_stat,
+			next_poll_at,
+			last_attempt_at,
+			created_at,
+			updated_at
+		FROM watches
+		WHERE active = 1
+			AND (next_poll_at IS NULL OR next_poll_at <= ?)
+		ORDER BY next_poll_at IS NOT NULL, next_poll_at ASC, id ASC
+	`, now.UTC())
+}
+
+func listWatchesByQuery(ctx context.Context, db *sql.DB, query string, args ...any) ([]Watch, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list watches: %w", err)
 	}
