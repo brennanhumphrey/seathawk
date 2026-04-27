@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,20 +38,16 @@ func newSessionImportCmd() *cobra.Command {
 				return err
 			}
 
-			svc, cleanup, err := newSessionService(cmd.Context())
-			if err != nil {
-				return err
-			}
-			defer cleanup()
+			return withSessionService(cmd, func(svc session.Service) error {
+				imported, err := svc.Import(cmd.Context(), payload)
+				if err != nil {
+					return err
+				}
 
-			imported, err := svc.Import(cmd.Context(), payload)
-			if err != nil {
-				return err
-			}
-
-			fmt.Fprintln(cmd.OutOrStdout(), "session imported and validated")
-			printSessionSummary(cmd.OutOrStdout(), imported)
-			return nil
+				fmt.Fprintln(cmd.OutOrStdout(), "session imported and validated")
+				printSessionSummary(cmd.OutOrStdout(), imported)
+				return nil
+			})
 		},
 	}
 	return cmd
@@ -63,19 +58,15 @@ func newSessionValidateCmd() *cobra.Command {
 		Use:   "validate",
 		Short: "Validate the stored VT session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, cleanup, err := newSessionService(cmd.Context())
-			if err != nil {
-				return err
-			}
-			defer cleanup()
+			return withSessionService(cmd, func(svc session.Service) error {
+				result, err := svc.ValidateCurrent(cmd.Context())
+				if err != nil {
+					return err
+				}
 
-			result, err := svc.ValidateCurrent(cmd.Context())
-			if err != nil {
-				return err
-			}
-
-			printSessionSummary(cmd.OutOrStdout(), result.Session)
-			return result.ValidationErr
+				printSessionSummary(cmd.OutOrStdout(), result.Session)
+				return result.ValidationErr
+			})
 		},
 	}
 	return cmd
@@ -86,26 +77,31 @@ func newSessionShowCmd() *cobra.Command {
 		Use:   "show",
 		Short: "Show safe metadata for the stored VT session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, cleanup, err := newSessionService(cmd.Context())
-			if err != nil {
-				return err
-			}
-			defer cleanup()
+			return withSessionService(cmd, func(svc session.Service) error {
+				current, err := svc.Current(cmd.Context())
+				if err != nil {
+					return err
+				}
 
-			current, err := svc.Current(cmd.Context())
-			if err != nil {
-				return err
-			}
-
-			printSessionSummary(cmd.OutOrStdout(), current)
-			return nil
+				printSessionSummary(cmd.OutOrStdout(), current)
+				return nil
+			})
 		},
 	}
 	return cmd
 }
 
-func newSessionService(ctx context.Context) (session.Service, func(), error) {
-	_, db, cleanup, err := openAppDB(ctx)
+func withSessionService(cmd *cobra.Command, fn func(session.Service) error) error {
+	svc, cleanup, err := newSessionService(cmd)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	return fn(svc)
+}
+
+func newSessionService(cmd *cobra.Command) (session.Service, func(), error) {
+	_, db, cleanup, err := openAppDB(cmd)
 	if err != nil {
 		return session.Service{}, nil, err
 	}

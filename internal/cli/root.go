@@ -11,14 +11,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var configPath string
-
 // Execute builds the root command and runs SeatHawk's CLI.
 func Execute(ctx context.Context) error {
 	return newRootCmd().ExecuteContext(ctx)
 }
 
 func newRootCmd() *cobra.Command {
+	var configPath string
 	cmd := &cobra.Command{
 		Use:           "seathawk",
 		Short:         "VT seat opening and auto-registration tool",
