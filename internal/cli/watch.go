@@ -19,12 +19,13 @@ func newWatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Manage local registration watches",
-		Long:  "Manage local watch definitions. These commands do not contact VT or attempt registration.",
+		Long:  "Manage local watch definitions. Creation and polling may contact VT for read-only checks, but watch commands do not attempt registration.",
 	}
 
 	cmd.AddCommand(newWatchAddCmd())
 	cmd.AddCommand(newWatchSwapCmd())
 	cmd.AddCommand(newWatchListCmd())
+	cmd.AddCommand(newWatchPollCmd())
 	cmd.AddCommand(newWatchEnableCmd())
 	cmd.AddCommand(newWatchDisableCmd())
 	cmd.AddCommand(newWatchRemoveCmd())
@@ -123,6 +124,31 @@ func newWatchListCmd() *cobra.Command {
 			return nil
 		},
 	}
+	return cmd
+}
+
+func newWatchPollCmd() *cobra.Command {
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:   "poll",
+		Short: "Run one read-only polling pass",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := newWatchService(cmd.Context())
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			report, err := svc.PollDue(cmd.Context(), watchsvc.PollInput{All: all})
+			if err != nil {
+				return err
+			}
+			printPollReport(cmd.OutOrStdout(), report)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&all, "all", false, "Poll all active watches, ignoring next_poll_at")
 	return cmd
 }
 
@@ -285,6 +311,27 @@ func printEvaluationSummary(w io.Writer, evaluation watchsvc.Evaluation) {
 		for _, reject := range evaluation.HardRejects {
 			fmt.Fprintf(w, "- %s\n", reject)
 		}
+	}
+}
+
+func printPollReport(w io.Writer, report watchsvc.PollReport) {
+	if len(report.Results) == 0 {
+		fmt.Fprintln(w, "no watches due")
+		return
+	}
+
+	fmt.Fprintf(w, "checked_at: %s\n", report.CheckedAt.UTC().Format(time.RFC3339))
+	for i, result := range report.Results {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "watch %d\n", result.Watch.ID)
+		printWatchSummary(w, result.Watch)
+		if result.Err != nil {
+			fmt.Fprintf(w, "error: %v\n", result.Err)
+			continue
+		}
+		printEvaluationSummary(w, result.Evaluation)
 	}
 }
 

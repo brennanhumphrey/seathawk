@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +124,66 @@ func TestPrintEvaluationSummary(t *testing.T) {
 	}
 }
 
+func TestPrintPollReportEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	printPollReport(&buf, watchsvc.PollReport{})
+	if got := strings.TrimSpace(buf.String()); got != "no watches due" {
+		t.Fatalf("empty output = %q, want no watches due", got)
+	}
+}
+
+func TestPrintPollReportSuccess(t *testing.T) {
+	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	var buf bytes.Buffer
+
+	printPollReport(&buf, watchsvc.PollReport{
+		CheckedAt: now,
+		Results: []watchsvc.PollResult{
+			{
+				Watch: store.Watch{
+					ID:      3,
+					Term:    "202609",
+					Mode:    "add",
+					AddCRN:  "60058",
+					Active:  true,
+					DropCRN: sql.NullString{},
+				},
+				Evaluation: watchsvc.Evaluation{
+					SectionStatus: watchsvc.SectionOpen,
+					SectionTitle:  "Software Engineering",
+					Window:        watchsvc.WindowReady,
+					Notes:         []watchsvc.Note{watchsvc.NoteSectionOpen},
+				},
+			},
+		},
+	})
+
+	out := buf.String()
+	for _, want := range []string{"checked_at: 2026-04-26T12:00:00Z", "watch 3", "section_status: open", "section_title: Software Engineering", "registration_window: ready"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("printPollReport output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintPollReportError(t *testing.T) {
+	var buf bytes.Buffer
+	printPollReport(&buf, watchsvc.PollReport{
+		CheckedAt: time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC),
+		Results: []watchsvc.PollResult{
+			{
+				Watch: store.Watch{ID: 4, Term: "202609", Mode: "add", AddCRN: "60058", Active: true},
+				Err:   errors.New("search add CRN: upstream failed"),
+			},
+		},
+	})
+
+	out := buf.String()
+	if !strings.Contains(out, "error: search add CRN: upstream failed") {
+		t.Fatalf("printPollReport output missing error:\n%s", out)
+	}
+}
+
 func TestWatchCommandRequiredFlags(t *testing.T) {
 	addCmd := newWatchAddCmd()
 	addCmd.SetArgs([]string{"--term", "202609"})
@@ -134,5 +195,12 @@ func TestWatchCommandRequiredFlags(t *testing.T) {
 	swapCmd.SetArgs([]string{"--term", "202609", "--add-crn", "60058"})
 	if err := swapCmd.ValidateRequiredFlags(); err == nil {
 		t.Fatal("swap command missing --drop-crn returned nil error")
+	}
+}
+
+func TestWatchPollCommandAllFlag(t *testing.T) {
+	cmd := newWatchPollCmd()
+	if cmd.Flags().Lookup("all") == nil {
+		t.Fatal("poll command does not define --all")
 	}
 }
