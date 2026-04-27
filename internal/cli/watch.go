@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/brennanhumphrey/seathawk/internal/store"
+	"github.com/brennanhumphrey/seathawk/internal/vt"
 	watchsvc "github.com/brennanhumphrey/seathawk/internal/watch"
 	"github.com/spf13/cobra"
 )
@@ -46,12 +47,13 @@ func newWatchAddCmd() *cobra.Command {
 
 			// CLI commands pass raw flag strings through to the service so all
 			// normalization and validation lives in one place.
-			watch, err := svc.Add(cmd.Context(), watchsvc.CreateAddInput{Term: term, CRN: crn})
+			watch, evaluation, err := svc.Add(cmd.Context(), watchsvc.CreateAddInput{Term: term, CRN: crn})
 			if err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "watch created")
 			printWatchSummary(cmd.OutOrStdout(), watch)
+			printEvaluationSummary(cmd.OutOrStdout(), evaluation)
 			return nil
 		},
 	}
@@ -79,7 +81,7 @@ func newWatchSwapCmd() *cobra.Command {
 
 			// Swap is intentionally a separate command because later phases will
 			// make it a potentially destructive add/drop workflow.
-			watch, err := svc.Swap(cmd.Context(), watchsvc.CreateSwapInput{
+			watch, evaluation, err := svc.Swap(cmd.Context(), watchsvc.CreateSwapInput{
 				Term:    term,
 				AddCRN:  addCRN,
 				DropCRN: dropCRN,
@@ -89,6 +91,7 @@ func newWatchSwapCmd() *cobra.Command {
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "watch created")
 			printWatchSummary(cmd.OutOrStdout(), watch)
+			printEvaluationSummary(cmd.OutOrStdout(), evaluation)
 			return nil
 		},
 	}
@@ -210,7 +213,14 @@ func newWatchService(ctx context.Context) (watchsvc.Service, func(), error) {
 	if err != nil {
 		return watchsvc.Service{}, nil, err
 	}
-	return watchsvc.Service{DB: db}, cleanup, nil
+
+	client, err := vt.NewClient(vt.ClientConfig{})
+	if err != nil {
+		cleanup()
+		return watchsvc.Service{}, nil, fmt.Errorf("create VT client: %w", err)
+	}
+
+	return watchsvc.Service{DB: db, VTClient: client}, cleanup, nil
 }
 
 func parseWatchID(raw string) (int64, error) {
@@ -256,6 +266,26 @@ func printWatchSummary(w io.Writer, watch store.Watch) {
 	fmt.Fprintf(w, "term: %s\n", watch.Term)
 	fmt.Fprintf(w, "add_crn: %s\n", watch.AddCRN)
 	fmt.Fprintf(w, "drop_crn: %s\n", formatNullableString(watch.DropCRN))
+}
+
+func printEvaluationSummary(w io.Writer, evaluation watchsvc.Evaluation) {
+	fmt.Fprintf(w, "section_status: %s\n", evaluation.SectionStatus)
+	if evaluation.SectionTitle != "" {
+		fmt.Fprintf(w, "section_title: %s\n", evaluation.SectionTitle)
+	}
+	fmt.Fprintf(w, "registration_window: %s\n", evaluation.Window)
+	if len(evaluation.Notes) > 0 {
+		fmt.Fprintln(w, "notes:")
+		for _, note := range evaluation.Notes {
+			fmt.Fprintf(w, "- %s\n", note)
+		}
+	}
+	if len(evaluation.HardRejects) > 0 {
+		fmt.Fprintln(w, "hard_rejects:")
+		for _, reject := range evaluation.HardRejects {
+			fmt.Fprintf(w, "- %s\n", reject)
+		}
+	}
 }
 
 func formatNullableString(value sql.NullString) string {

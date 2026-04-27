@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brennanhumphrey/seathawk/internal/store"
+	watchsvc "github.com/brennanhumphrey/seathawk/internal/watch"
 )
 
 func TestRootCommandIncludesWatch(t *testing.T) {
@@ -101,6 +102,23 @@ func TestPrintWatchSummary(t *testing.T) {
 	for _, want := range []string{"id: 7", "active: true", "mode: add", "term: 202609", "add_crn: 60058", "drop_crn: -"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("printWatchSummary output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintEvaluationSummary(t *testing.T) {
+	var buf bytes.Buffer
+	printEvaluationSummary(&buf, watchsvc.Evaluation{
+		SectionStatus: watchsvc.SectionFull,
+		SectionTitle:  "Software Engineering",
+		Window:        watchsvc.WindowNotOpen,
+		Notes:         []watchsvc.Note{watchsvc.NoteSectionFull, watchsvc.NoteWindowNotOpen},
+	})
+
+	out := buf.String()
+	for _, want := range []string{"section_status: full", "section_title: Software Engineering", "registration_window: not_open", "section is currently full", "registration window is not open yet"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("printEvaluationSummary output missing %q:\n%s", want, out)
 		}
 	}
 }

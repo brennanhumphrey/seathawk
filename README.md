@@ -3,8 +3,9 @@
 SeatHawk is a single-user Go CLI for monitoring Virginia Tech course seats and,
 eventually, attempting registration with the user's own local VT session.
 
-Current status: the app can import/validate a VT session and manage local watch
-definitions. It does **not** poll for seat openings or register/drop courses yet.
+Current status: the app can import/validate a VT session and create live-checked
+local watch definitions. It does **not** poll continuously or register/drop
+courses yet.
 
 ## Quick Start
 
@@ -43,7 +44,8 @@ current `pers_id` / `pers_id_proof` needed by later registration phases.
 ## Manage Watches
 
 Watches are local records of what you want SeatHawk to attempt later. Creating a
-watch does not contact VT and does not register or drop anything.
+watch now performs read-only VT sanity checks, but it does not register or drop
+anything.
 
 There are two watch modes:
 
@@ -53,6 +55,14 @@ There are two watch modes:
 Swap is separate on purpose. Later registration code must treat add/drop
 workflows as potentially destructive and reconcile the result carefully against
 fresh `studentdata`.
+
+Watch creation requires an imported valid session because SeatHawk checks your
+current `studentdata` before saving. This prevents watches that are already
+satisfied or unsafe, such as watching an add CRN you are already registered for
+or creating a swap whose drop CRN is not currently in your schedule.
+
+Full sections are valid watch targets. In practice, most watches are expected to
+start with a full CRN and wait until a future polling phase sees it open.
 
 Create an add watch:
 
@@ -112,14 +122,15 @@ CLI command
   -> local SQLite database
 ```
 
-Session commands also construct a VT client because they validate the copied
-authtoken against `studentdata`. Watch commands do not construct a VT client
-because this phase only records local intent.
+Session commands construct a VT client because they validate the copied
+authtoken against `studentdata`. Watch creation also constructs a VT client, but
+only for read-only checks: `studentdata` for current registration state and
+`fose` search for CRN existence/current section status.
 
-The `watches` table already has fields such as `last_seen_stat`,
-`next_poll_at`, and `last_attempt_at`. Those are placeholders for the daemon
-polling loop and registration-attempt history. They are intentionally not filled
-by watch CRUD commands yet.
+The `watches` table has fields such as `last_seen_stat`, `next_poll_at`, and
+`last_attempt_at`. Watch creation now fills the initial section status and first
+poll time. The daemon polling loop and registration-attempt history still come
+later.
 
 ## Verification
 
