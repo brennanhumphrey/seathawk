@@ -143,10 +143,14 @@ func TestValidateCurrentValid(t *testing.T) {
 		Now:      func() time.Time { return now },
 	}
 
-	got, err := svc.ValidateCurrent(context.Background())
+	result, err := svc.ValidateCurrent(context.Background())
 	if err != nil {
 		t.Fatalf("ValidateCurrent returned error: %v", err)
 	}
+	if result.ValidationErr != nil {
+		t.Fatalf("ValidateCurrent validation error = %v, want nil", result.ValidationErr)
+	}
+	got := result.Session
 	if got.Status != StatusValid || !got.LastValidatedAt.Valid {
 		t.Fatalf("unexpected session: %+v", got)
 	}
@@ -165,10 +169,14 @@ func TestValidateCurrentInvalidOnVTError(t *testing.T) {
 		Now:      func() time.Time { return now },
 	}
 
-	got, err := svc.ValidateCurrent(context.Background())
-	if err == nil {
-		t.Fatal("ValidateCurrent returned nil error")
+	result, err := svc.ValidateCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("ValidateCurrent returned error: %v", err)
 	}
+	if result.ValidationErr == nil {
+		t.Fatal("ValidateCurrent returned nil validation error")
+	}
+	got := result.Session
 	if got.Status != StatusInvalid || !got.LastValidatedAt.Valid {
 		t.Fatalf("unexpected invalid session: %+v", got)
 	}
@@ -183,10 +191,14 @@ func TestValidateCurrentInvalidOnMismatch(t *testing.T) {
 		Now:      fixedNow,
 	}
 
-	got, err := svc.ValidateCurrent(context.Background())
-	if err == nil {
-		t.Fatal("ValidateCurrent returned nil error")
+	result, err := svc.ValidateCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("ValidateCurrent returned error: %v", err)
 	}
+	if result.ValidationErr == nil {
+		t.Fatal("ValidateCurrent returned nil validation error")
+	}
+	got := result.Session
 	if got.Status != StatusInvalid {
 		t.Fatalf("Status = %q, want invalid", got.Status)
 	}
@@ -201,10 +213,14 @@ func TestValidateCurrentInvalidOnMissingFreshProof(t *testing.T) {
 		Now:      fixedNow,
 	}
 
-	got, err := svc.ValidateCurrent(context.Background())
-	if err == nil {
-		t.Fatal("ValidateCurrent returned nil error")
+	result, err := svc.ValidateCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("ValidateCurrent returned error: %v", err)
 	}
+	if result.ValidationErr == nil {
+		t.Fatal("ValidateCurrent returned nil validation error")
+	}
+	got := result.Session
 	if got.Status != StatusInvalid {
 		t.Fatalf("Status = %q, want invalid", got.Status)
 	}
@@ -226,7 +242,7 @@ func fixedNow() time.Time {
 
 func saveStoredSession(t *testing.T, db *sql.DB, status string, lastValidatedAt sql.NullTime) {
 	t.Helper()
-	if err := store.SaveSession(context.Background(), db, store.Session{
+	if _, err := store.SaveSession(context.Background(), db, store.Session{
 		Authtoken:       "token",
 		PersID:          "person",
 		PersIDProof:     "proof",

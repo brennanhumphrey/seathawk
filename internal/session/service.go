@@ -46,13 +46,22 @@ type Service struct {
 	Now func() time.Time
 }
 
+// ValidationResult is the outcome of re-checking a stored session.
+//
+// ValidationErr is separate from the method error so callers can display the
+// persisted session status even when VT rejected the credentials.
+type ValidationResult struct {
+	Session       store.Session
+	ValidationErr error
+}
+
 // Import validates the captured authtoken and stores the derived VT session fields.
 func (s Service) Import(ctx context.Context, payload CapturedCredentials) (store.Session, error) {
 	if payload.Authtoken == "" {
 		return store.Session{}, fmt.Errorf("authtoken is required")
 	}
 
-	studentData, err := s.client().StudentData(ctx, payload.Authtoken)
+	studentData, err := s.VTClient.StudentData(ctx, payload.Authtoken)
 	if err != nil {
 		return store.Session{}, fmt.Errorf("validate imported session: %w", err)
 	}
@@ -79,35 +88,39 @@ func (s Service) Import(ctx context.Context, payload CapturedCredentials) (store
 		LastValidatedAt: sql.NullTime{Time: now, Valid: true},
 		Status:          StatusValid,
 	}
-	if err := store.SaveSession(ctx, s.DB, session); err != nil {
+	saved, err := store.SaveSession(ctx, s.DB, session)
+	if err != nil {
 		return store.Session{}, err
 	}
 
-	return store.CurrentSession(ctx, s.DB)
+	return saved, nil
 }
 
 // ValidateCurrent re-checks the stored session against VT studentdata.
-func (s Service) ValidateCurrent(ctx context.Context) (store.Session, error) {
+func (s Service) ValidateCurrent(ctx context.Context) (ValidationResult, error) {
 	current, err := store.CurrentSession(ctx, s.DB)
 	if err != nil {
-		return store.Session{}, err
+		return ValidationResult{}, err
 	}
 
 	now := s.now()
-	studentData, err := s.client().StudentData(ctx, current.Authtoken)
+	studentData, err := s.VTClient.StudentData(ctx, current.Authtoken)
+	decision := validValidation(studentData.Pers.IDProof)
 	if err != nil {
 		// Preserve the row for audit/history, but mark it unusable for future
 		// workflows until the user imports or validates fresh credentials.
-		return s.markCurrent(ctx, current, StatusInvalid, now, "", fmt.Errorf("validate stored session: %w", err))
-	}
-	if studentData.Pers.ID != current.PersID {
-		return s.markCurrent(ctx, current, StatusInvalid, now, "", fmt.Errorf("stored session identity no longer matches VT studentdata"))
-	}
-	if studentData.Pers.IDProof == "" {
-		return s.markCurrent(ctx, current, StatusInvalid, now, "", fmt.Errorf("VT studentdata did not include a session proof"))
+		decision = invalidValidation(fmt.Errorf("validate stored session: %w", err))
+	} else if studentData.Pers.ID != current.PersID {
+		decision = invalidValidation(fmt.Errorf("stored session identity no longer matches VT studentdata"))
+	} else if studentData.Pers.IDProof == "" {
+		decision = invalidValidation(fmt.Errorf("VT studentdata did not include a session proof"))
 	}
 
-	return s.markCurrent(ctx, current, StatusValid, now, studentData.Pers.IDProof, nil)
+	updated, err := s.persistValidationDecision(ctx, current, now, decision)
+	if err != nil {
+		return ValidationResult{}, err
+	}
+	return ValidationResult{Session: updated, ValidationErr: decision.ValidationErr}, nil
 }
 
 // Current returns the newest stored session without contacting VT.
@@ -115,31 +128,42 @@ func (s Service) Current(ctx context.Context) (store.Session, error) {
 	return store.CurrentSession(ctx, s.DB)
 }
 
-func (s Service) markCurrent(ctx context.Context, current store.Session, status string, at time.Time, persIDProof string, cause error) (store.Session, error) {
-	if err := store.UpdateSessionValidation(ctx, s.DB, current.ID, status, at, persIDProof); err != nil {
-		if cause != nil {
-			return store.Session{}, fmt.Errorf("%v; also failed to update session status: %w", cause, err)
+type validationDecision struct {
+	Status        string
+	PersIDProof   string
+	ValidationErr error
+}
+
+func validValidation(persIDProof string) validationDecision {
+	return validationDecision{
+		Status:      StatusValid,
+		PersIDProof: persIDProof,
+	}
+}
+
+func invalidValidation(err error) validationDecision {
+	return validationDecision{
+		Status:        StatusInvalid,
+		ValidationErr: err,
+	}
+}
+
+func (s Service) persistValidationDecision(ctx context.Context, current store.Session, at time.Time, decision validationDecision) (store.Session, error) {
+	if err := store.UpdateSessionValidation(ctx, s.DB, current.ID, decision.Status, at, decision.PersIDProof); err != nil {
+		if decision.ValidationErr != nil {
+			return store.Session{}, fmt.Errorf("%v; also failed to update session status: %w", decision.ValidationErr, err)
 		}
 		return store.Session{}, err
 	}
 
 	updated, err := store.CurrentSession(ctx, s.DB)
 	if err != nil {
-		if cause != nil {
-			return store.Session{}, fmt.Errorf("%v; also failed to reload session: %w", cause, err)
+		if decision.ValidationErr != nil {
+			return store.Session{}, fmt.Errorf("%v; also failed to reload session: %w", decision.ValidationErr, err)
 		}
 		return store.Session{}, err
 	}
-	if cause != nil {
-		// Return the updated row and the validation failure so CLI callers can
-		// show the new status while still exiting non-zero.
-		return updated, cause
-	}
 	return updated, nil
-}
-
-func (s Service) client() StudentDataClient {
-	return s.VTClient
 }
 
 func (s Service) now() time.Time {

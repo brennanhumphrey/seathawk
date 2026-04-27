@@ -69,9 +69,13 @@ func newSessionValidateCmd() *cobra.Command {
 			}
 			defer cleanup()
 
-			validated, err := svc.ValidateCurrent(cmd.Context())
-			printSessionSummary(cmd.OutOrStdout(), validated)
-			return err
+			result, err := svc.ValidateCurrent(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			printSessionSummary(cmd.OutOrStdout(), result.Session)
+			return result.ValidationErr
 		},
 	}
 	return cmd

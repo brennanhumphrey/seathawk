@@ -14,7 +14,7 @@ func TestSaveSessionAndCurrentSession(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
 
-	err := SaveSession(ctx, db, Session{
+	saved, err := SaveSession(ctx, db, Session{
 		Authtoken:       "token",
 		PersID:          "person",
 		PersIDProof:     "proof",
@@ -24,6 +24,9 @@ func TestSaveSessionAndCurrentSession(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("SaveSession returned error: %v", err)
+	}
+	if saved.ID == 0 {
+		t.Fatal("SaveSession returned session without ID")
 	}
 
 	got, err := CurrentSession(ctx, db)
@@ -44,7 +47,7 @@ func TestSaveSessionAppendsHistoryAndCurrentSessionReturnsNewest(t *testing.T) {
 	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
 
 	for _, token := range []string{"old", "new"} {
-		if err := SaveSession(ctx, db, Session{
+		if _, err := SaveSession(ctx, db, Session{
 			Authtoken:   token,
 			PersID:      token + "-person",
 			PersIDProof: token + "-proof",
@@ -84,7 +87,7 @@ func TestUpdateSessionValidation(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
-	if err := SaveSession(ctx, db, Session{
+	if _, err := SaveSession(ctx, db, Session{
 		Authtoken:   "token",
 		PersID:      "person",
 		PersIDProof: "proof",

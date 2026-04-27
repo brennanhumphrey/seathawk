@@ -25,9 +25,10 @@ type Session struct {
 	Status          string
 }
 
-// SaveSession appends session to the local session history.
-func SaveSession(ctx context.Context, db *sql.DB, session Session) error {
-	_, err := db.ExecContext(ctx, `
+// SaveSession appends session to the local session history and returns the
+// inserted row.
+func SaveSession(ctx context.Context, db *sql.DB, session Session) (Session, error) {
+	result, err := db.ExecContext(ctx, `
 		INSERT INTO sessions (
 			authtoken,
 			pers_id,
@@ -45,9 +46,14 @@ func SaveSession(ctx context.Context, db *sql.DB, session Session) error {
 		session.Status,
 	)
 	if err != nil {
-		return fmt.Errorf("insert session: %w", err)
+		return Session{}, fmt.Errorf("insert session: %w", err)
 	}
-	return nil
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return Session{}, fmt.Errorf("read inserted session id: %w", err)
+	}
+	return sessionByID(ctx, db, id)
 }
 
 // CurrentSession returns the newest imported session.
@@ -68,6 +74,46 @@ func CurrentSession(ctx context.Context, db *sql.DB) (Session, error) {
 		LIMIT 1
 	`)
 
+	session, err := scanSession(row)
+	if errors.Is(err, ErrNoSession) {
+		return Session{}, ErrNoSession
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("read current session: %w", err)
+	}
+
+	return session, nil
+}
+
+func sessionByID(ctx context.Context, db *sql.DB, id int64) (Session, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT
+			id,
+			authtoken,
+			pers_id,
+			pers_id_proof,
+			captured_at,
+			last_validated_at,
+			status
+		FROM sessions
+		WHERE id = ?
+	`, id)
+
+	session, err := scanSession(row)
+	if errors.Is(err, ErrNoSession) {
+		return Session{}, ErrNoSession
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("read inserted session: %w", err)
+	}
+	return session, nil
+}
+
+type sessionScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSession(row sessionScanner) (Session, error) {
 	var session Session
 	err := row.Scan(
 		&session.ID,
@@ -82,9 +128,8 @@ func CurrentSession(ctx context.Context, db *sql.DB) (Session, error) {
 		return Session{}, ErrNoSession
 	}
 	if err != nil {
-		return Session{}, fmt.Errorf("read current session: %w", err)
+		return Session{}, err
 	}
-
 	return session, nil
 }
 
