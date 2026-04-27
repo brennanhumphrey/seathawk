@@ -13,16 +13,28 @@ import (
 )
 
 type fakeVTClient struct {
-	studentData vt.StudentData
-	search      vt.FoseSearchResponse
-	err         error
+	studentData      vt.StudentData
+	search           vt.FoseSearchResponse
+	searchByCRN      map[string]vt.FoseSearchResponse
+	studentDataCalls int
+	searchCalls      int
+	err              error
+	searchErrByCRN   map[string]error
 }
 
-func (f fakeVTClient) StudentData(ctx context.Context, authtoken string) (vt.StudentData, error) {
+func (f *fakeVTClient) StudentData(ctx context.Context, authtoken string) (vt.StudentData, error) {
+	f.studentDataCalls++
 	return f.studentData, f.err
 }
 
-func (f fakeVTClient) SearchByCRN(ctx context.Context, term, crn string) (vt.FoseSearchResponse, error) {
+func (f *fakeVTClient) SearchByCRN(ctx context.Context, term, crn string) (vt.FoseSearchResponse, error) {
+	f.searchCalls++
+	if err := f.searchErrByCRN[crn]; err != nil {
+		return vt.FoseSearchResponse{}, err
+	}
+	if search, ok := f.searchByCRN[crn]; ok {
+		return search, f.err
+	}
 	return f.search, f.err
 }
 
@@ -209,6 +221,30 @@ func TestAddRejectsCanceledCRN(t *testing.T) {
 	}
 }
 
+func TestAddRejectDoesNotSaveWatch(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	client := validFakeVTClient()
+	client.search = vt.FoseSearchResponse{}
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	_, eval, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
+	if err == nil {
+		t.Fatal("Add returned nil error")
+	}
+	if !hasReject(eval, RejectCRNNotFound) {
+		t.Fatalf("HardRejects = %v, want %s", eval.HardRejects, RejectCRNNotFound)
+	}
+
+	watches, err := store.ListWatches(context.Background(), db)
+	if err != nil {
+		t.Fatalf("ListWatches returned error: %v", err)
+	}
+	if len(watches) != 0 {
+		t.Fatalf("saved watch count = %d, want 0: %+v", len(watches), watches)
+	}
+}
+
 func TestSwapRejectsMissingDropRegistration(t *testing.T) {
 	db := newWatchTestDB(t)
 	saveWatchTestSession(t, db)
@@ -220,6 +256,201 @@ func TestSwapRejectsMissingDropRegistration(t *testing.T) {
 	}
 	if !hasReject(eval, RejectMissingDropRegistration) {
 		t.Fatalf("HardRejects = %v, want %s", eval.HardRejects, RejectMissingDropRegistration)
+	}
+}
+
+func TestPollDueEmpty(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
+
+	report, err := svc.PollDue(context.Background(), PollInput{})
+	if err != nil {
+		t.Fatalf("PollDue returned error: %v", err)
+	}
+	if len(report.Results) != 0 {
+		t.Fatalf("result count = %d, want 0", len(report.Results))
+	}
+}
+
+func TestPollDueEvaluatesDueWatches(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	now := fixedWatchNow()
+	watch := saveWatchForPoll(t, db, store.Watch{
+		Term:       "202609",
+		Mode:       ModeAdd,
+		AddCRN:     "60058",
+		Active:     true,
+		NextPollAt: sql.NullTime{Time: now.Add(-time.Minute), Valid: true},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	client := validFakeVTClient()
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	report, err := svc.PollDue(context.Background(), PollInput{})
+	if err != nil {
+		t.Fatalf("PollDue returned error: %v", err)
+	}
+	if len(report.Results) != 1 {
+		t.Fatalf("result count = %d, want 1", len(report.Results))
+	}
+	if report.Results[0].Watch.ID != watch.ID || report.Results[0].Evaluation.SectionStatus != SectionFull {
+		t.Fatalf("unexpected poll result: %+v", report.Results[0])
+	}
+	if client.studentDataCalls != 1 {
+		t.Fatalf("studentdata calls = %d, want 1", client.studentDataCalls)
+	}
+	if !report.Results[0].Watch.LastSeenStat.Valid || report.Results[0].Watch.LastSeenStat.String != string(SectionFull) {
+		t.Fatalf("LastSeenStat = %+v, want full", report.Results[0].Watch.LastSeenStat)
+	}
+	if !report.Results[0].Watch.NextPollAt.Valid || !report.Results[0].Watch.NextPollAt.Time.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("NextPollAt = %+v, want %s", report.Results[0].Watch.NextPollAt, now.Add(30*time.Second))
+	}
+}
+
+func TestPollDueFetchesStudentDataOnceForMultipleWatches(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	now := fixedWatchNow()
+	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60058", Active: true, CreatedAt: now, UpdatedAt: now})
+	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60059", Active: true, CreatedAt: now, UpdatedAt: now})
+	client := validFakeVTClient()
+	client.searchByCRN = map[string]vt.FoseSearchResponse{
+		"60058": foseSearch("60058", "F"),
+		"60059": foseSearch("60059", "A"),
+	}
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	report, err := svc.PollDue(context.Background(), PollInput{})
+	if err != nil {
+		t.Fatalf("PollDue returned error: %v", err)
+	}
+	if len(report.Results) != 2 {
+		t.Fatalf("result count = %d, want 2", len(report.Results))
+	}
+	if client.studentDataCalls != 1 {
+		t.Fatalf("studentdata calls = %d, want 1", client.studentDataCalls)
+	}
+	if client.searchCalls != 2 {
+		t.Fatalf("search calls = %d, want 2", client.searchCalls)
+	}
+}
+
+func TestPollDueAllIncludesFutureActiveWatches(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	now := fixedWatchNow()
+	saveWatchForPoll(t, db, store.Watch{
+		Term:       "202609",
+		Mode:       ModeAdd,
+		AddCRN:     "60058",
+		Active:     true,
+		NextPollAt: sql.NullTime{Time: now.Add(time.Hour), Valid: true},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
+
+	report, err := svc.PollDue(context.Background(), PollInput{All: true})
+	if err != nil {
+		t.Fatalf("PollDue returned error: %v", err)
+	}
+	if len(report.Results) != 1 {
+		t.Fatalf("result count = %d, want 1", len(report.Results))
+	}
+}
+
+func TestPollDueSkipsDisabledWatches(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	now := fixedWatchNow()
+	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60058", Active: false, CreatedAt: now, UpdatedAt: now})
+	client := validFakeVTClient()
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	report, err := svc.PollDue(context.Background(), PollInput{All: true})
+	if err != nil {
+		t.Fatalf("PollDue returned error: %v", err)
+	}
+	if len(report.Results) != 0 {
+		t.Fatalf("result count = %d, want 0", len(report.Results))
+	}
+	if client.studentDataCalls != 0 {
+		t.Fatalf("studentdata calls = %d, want 0", client.studentDataCalls)
+	}
+}
+
+func TestPollDueContinuesAfterPerWatchError(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	now := fixedWatchNow()
+	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60058", Active: true, CreatedAt: now, UpdatedAt: now})
+	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60059", Active: true, CreatedAt: now, UpdatedAt: now})
+	client := validFakeVTClient()
+	client.searchErrByCRN = map[string]error{"60058": errors.New("upstream failed")}
+	client.searchByCRN = map[string]vt.FoseSearchResponse{"60059": foseSearch("60059", "A")}
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	report, err := svc.PollDue(context.Background(), PollInput{})
+	if err != nil {
+		t.Fatalf("PollDue returned error: %v", err)
+	}
+	if len(report.Results) != 2 {
+		t.Fatalf("result count = %d, want 2", len(report.Results))
+	}
+	if report.Results[0].Err == nil {
+		t.Fatal("first result error is nil")
+	}
+	if report.Results[1].Err != nil {
+		t.Fatalf("second result error = %v, want nil", report.Results[1].Err)
+	}
+	if !report.Results[0].Watch.NextPollAt.Valid {
+		t.Fatalf("errored watch was not rescheduled: %+v", report.Results[0].Watch)
+	}
+}
+
+func TestPollDueDisablesHardRejectedWatch(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	now := fixedWatchNow()
+	watch := saveWatchForPoll(t, db, store.Watch{
+		Term:       "202609",
+		Mode:       ModeAdd,
+		AddCRN:     "60058",
+		Active:     true,
+		NextPollAt: sql.NullTime{Time: now.Add(-time.Minute), Valid: true},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	client := validFakeVTClient()
+	client.search = vt.FoseSearchResponse{}
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	report, err := svc.PollDue(context.Background(), PollInput{})
+	if err != nil {
+		t.Fatalf("PollDue returned error: %v", err)
+	}
+	if len(report.Results) != 1 {
+		t.Fatalf("result count = %d, want 1", len(report.Results))
+	}
+	if report.Results[0].Err == nil {
+		t.Fatal("poll result error is nil")
+	}
+	if report.Results[0].Watch.Active {
+		t.Fatalf("rejected watch remains active: %+v", report.Results[0].Watch)
+	}
+	if report.Results[0].Watch.NextPollAt.Valid {
+		t.Fatalf("rejected watch still has next poll time: %+v", report.Results[0].Watch.NextPollAt)
+	}
+
+	updated, err := store.WatchByID(context.Background(), db, watch.ID)
+	if err != nil {
+		t.Fatalf("WatchByID returned error: %v", err)
+	}
+	if updated.Active {
+		t.Fatalf("stored watch remains active: %+v", updated)
 	}
 }
 
@@ -236,6 +467,15 @@ func newWatchTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func saveWatchForPoll(t *testing.T, db *sql.DB, watch store.Watch) store.Watch {
+	t.Helper()
+	saved, err := store.SaveWatch(context.Background(), db, watch)
+	if err != nil {
+		t.Fatalf("SaveWatch returned error: %v", err)
+	}
+	return saved
+}
+
 func saveWatchTestSession(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := store.SaveSession(context.Background(), db, store.Session{
@@ -249,8 +489,8 @@ func saveWatchTestSession(t *testing.T, db *sql.DB) {
 	}
 }
 
-func validFakeVTClient() fakeVTClient {
-	return fakeVTClient{
+func validFakeVTClient() *fakeVTClient {
+	return &fakeVTClient{
 		studentData: studentDataWithTicket(),
 		search:      foseSearch("60058", "F"),
 	}
