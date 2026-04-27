@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/brennanhumphrey/seathawk/internal/sessionstatus"
 	"github.com/brennanhumphrey/seathawk/internal/store"
 )
 
@@ -26,6 +27,8 @@ const (
 	ModeAdd = "add"
 	// ModeSwap is a watch that will eventually add one CRN and drop another.
 	ModeSwap = "swap"
+	// DefaultPollInterval follows the VT API reference's "be polite" guidance.
+	DefaultPollInterval = 30 * time.Second
 )
 
 // Service coordinates watch validation with local persistence.
@@ -36,6 +39,8 @@ const (
 type Service struct {
 	DB       *sql.DB
 	VTClient VTClient
+	// PollInterval controls how far successful/erroring polls are pushed out.
+	PollInterval time.Duration
 	// Now is injectable so timestamp behavior can be tested deterministically.
 	Now func() time.Time
 }
@@ -93,7 +98,7 @@ func (s Service) Add(ctx context.Context, input CreateAddInput) (store.Watch, Ev
 		return store.Watch{}, evaluation, fmt.Errorf("watch rejected: %s", formatRejects(evaluation.HardRejects))
 	}
 
-	nextPollAt := nextPollTime(now)
+	nextPollAt := s.nextPollTime(now)
 	watch = withInitialEvaluationMetadata(watch, evaluation, nextPollAt)
 
 	saved, err := store.SaveWatch(ctx, s.DB, watch)
@@ -146,7 +151,7 @@ func (s Service) Swap(ctx context.Context, input CreateSwapInput) (store.Watch, 
 		return store.Watch{}, evaluation, fmt.Errorf("watch rejected: %s", formatRejects(evaluation.HardRejects))
 	}
 
-	nextPollAt := nextPollTime(now)
+	nextPollAt := s.nextPollTime(now)
 	watch = withInitialEvaluationMetadata(watch, evaluation, nextPollAt)
 
 	saved, err := store.SaveWatch(ctx, s.DB, watch)
@@ -189,14 +194,18 @@ func (s Service) currentSession(ctx context.Context) (store.Session, error) {
 	if err != nil {
 		return store.Session{}, fmt.Errorf("load current session: %w", err)
 	}
-	if session.Status != "valid" {
+	if session.Status != sessionstatus.StatusValid {
 		return store.Session{}, fmt.Errorf("current session is %s; run session validate or import fresh credentials", session.Status)
 	}
 	return session, nil
 }
 
-func nextPollTime(now time.Time) time.Time {
-	return now.UTC().Add(30 * time.Second)
+func (s Service) nextPollTime(now time.Time) time.Time {
+	interval := s.PollInterval
+	if interval == 0 {
+		interval = DefaultPollInterval
+	}
+	return now.UTC().Add(interval)
 }
 
 func withInitialEvaluationMetadata(watch store.Watch, evaluation Evaluation, nextPollAt time.Time) store.Watch {

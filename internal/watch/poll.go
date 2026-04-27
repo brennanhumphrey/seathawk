@@ -88,25 +88,37 @@ func (s Service) pollWatch(ctx context.Context, watch store.Watch, studentData v
 	search, err := s.VTClient.SearchByCRN(ctx, watch.Term, watch.AddCRN)
 	if err != nil {
 		result.Err = fmt.Errorf("search add CRN: %w", err)
-		result.Watch = s.rescheduleAfterPollError(ctx, watch, now)
+		updated, updateErr := s.rescheduleAfterPollError(ctx, watch, now)
+		result.Watch = updated
+		if updateErr != nil {
+			result.Err = fmt.Errorf("%v; also failed to reschedule watch: %w", result.Err, updateErr)
+		}
 		return result
 	}
 
 	evaluation, err := evaluateFromSnapshots(watch, studentData, search, now)
 	if err != nil {
 		result.Err = err
-		result.Watch = s.rescheduleAfterPollError(ctx, watch, now)
+		updated, updateErr := s.rescheduleAfterPollError(ctx, watch, now)
+		result.Watch = updated
+		if updateErr != nil {
+			result.Err = fmt.Errorf("%v; also failed to reschedule watch: %w", result.Err, updateErr)
+		}
 		return result
 	}
 	result.Evaluation = evaluation
 
 	if evaluation.HasHardRejects() {
 		result.Err = fmt.Errorf("watch rejected: %s", formatRejects(evaluation.HardRejects))
-		result.Watch = s.disableRejectedWatch(ctx, watch, evaluation, now)
+		updated, updateErr := s.disableRejectedWatch(ctx, watch, evaluation, now)
+		result.Watch = updated
+		if updateErr != nil {
+			result.Err = fmt.Errorf("%v; also failed to disable rejected watch: %w", result.Err, updateErr)
+		}
 		return result
 	}
 
-	nextPollAt := nextPollTime(now)
+	nextPollAt := s.nextPollTime(now)
 	if err := store.UpdateWatchEvaluation(ctx, s.DB, watch.ID, watchStatusForStorage(evaluation), sql.NullTime{Time: nextPollAt, Valid: true}, now); err != nil {
 		result.Err = err
 		return result
@@ -122,29 +134,35 @@ func (s Service) pollWatch(ctx context.Context, watch store.Watch, studentData v
 	return result
 }
 
-func (s Service) rescheduleAfterPollError(ctx context.Context, watch store.Watch, now time.Time) store.Watch {
+func (s Service) rescheduleAfterPollError(ctx context.Context, watch store.Watch, now time.Time) (store.Watch, error) {
 	// A transient VT/parsing error should not make the watch hot-loop. Keep the
 	// previous observed status and push the next poll out by the normal interval.
-	nextPollAt := nextPollTime(now)
-	_ = store.UpdateWatchEvaluation(ctx, s.DB, watch.ID, watch.LastSeenStat, sql.NullTime{Time: nextPollAt, Valid: true}, now)
+	nextPollAt := s.nextPollTime(now)
+	if err := store.UpdateWatchEvaluation(ctx, s.DB, watch.ID, watch.LastSeenStat, sql.NullTime{Time: nextPollAt, Valid: true}, now); err != nil {
+		return watch, err
+	}
 	updated, err := store.WatchByID(ctx, s.DB, watch.ID)
 	if err != nil {
-		return watch
+		return watch, err
 	}
-	return updated
+	return updated, nil
 }
 
-func (s Service) disableRejectedWatch(ctx context.Context, watch store.Watch, evaluation Evaluation, now time.Time) store.Watch {
+func (s Service) disableRejectedWatch(ctx context.Context, watch store.Watch, evaluation Evaluation, now time.Time) (store.Watch, error) {
 	// Hard rejects mean the local intent is no longer safe or valid to automate:
 	// wrong term/CRN, canceled section, already registered add target, or an
 	// unsafe swap drop target. Disable the watch so future polls skip it.
-	_ = store.UpdateWatchEvaluation(ctx, s.DB, watch.ID, watchStatusForStorage(evaluation), sql.NullTime{}, now)
-	_ = store.SetWatchActive(ctx, s.DB, watch.ID, false, now)
+	if err := store.UpdateWatchEvaluation(ctx, s.DB, watch.ID, watchStatusForStorage(evaluation), sql.NullTime{}, now); err != nil {
+		return watch, err
+	}
+	if err := store.SetWatchActive(ctx, s.DB, watch.ID, false, now); err != nil {
+		return watch, err
+	}
 	updated, err := store.WatchByID(ctx, s.DB, watch.ID)
 	if err != nil {
-		return watch
+		return watch, err
 	}
-	return updated
+	return updated, nil
 }
 
 func watchStatusForStorage(evaluation Evaluation) sql.NullString {

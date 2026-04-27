@@ -4,11 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/brennanhumphrey/seathawk/internal/store"
+	"github.com/brennanhumphrey/seathawk/internal/storetest"
 	"github.com/brennanhumphrey/seathawk/internal/vt"
 )
 
@@ -39,7 +40,7 @@ func (f *fakeVTClient) SearchByCRN(ctx context.Context, term, crn string) (vt.Fo
 }
 
 func TestAddCreatesActiveWatch(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
 
@@ -65,7 +66,7 @@ func TestAddCreatesActiveWatch(t *testing.T) {
 }
 
 func TestSwapCreatesActiveWatch(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	client := validFakeVTClient()
 	client.studentData.Registered = map[string][]string{"202609": []string{"60900|CS 3304||N|3|UG|misc"}}
@@ -116,7 +117,7 @@ func TestServiceValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := Service{DB: newWatchTestDB(t), Now: fixedWatchNow}
+			svc := Service{DB: storetest.NewDB(t), Now: fixedWatchNow}
 			if err := tt.call(svc); err == nil {
 				t.Fatal("call returned nil error")
 			}
@@ -125,7 +126,7 @@ func TestServiceValidation(t *testing.T) {
 }
 
 func TestServiceTrimsInput(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
 
@@ -139,7 +140,7 @@ func TestServiceTrimsInput(t *testing.T) {
 }
 
 func TestEnableDisable(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
 	watch, _, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
@@ -165,7 +166,7 @@ func TestEnableDisable(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
 	watch, _, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
@@ -182,7 +183,7 @@ func TestRemove(t *testing.T) {
 }
 
 func TestAddRequiresCurrentSession(t *testing.T) {
-	svc := Service{DB: newWatchTestDB(t), VTClient: validFakeVTClient(), Now: fixedWatchNow}
+	svc := Service{DB: storetest.NewDB(t), VTClient: validFakeVTClient(), Now: fixedWatchNow}
 	_, _, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
 	if err == nil {
 		t.Fatal("Add returned nil error")
@@ -190,7 +191,7 @@ func TestAddRequiresCurrentSession(t *testing.T) {
 }
 
 func TestAddRejectsAlreadyRegisteredCRN(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	client := validFakeVTClient()
 	client.studentData.Registered = map[string][]string{"202609": []string{"60058|CS 3304||N|3|UG|misc"}}
@@ -206,7 +207,7 @@ func TestAddRejectsAlreadyRegisteredCRN(t *testing.T) {
 }
 
 func TestAddRejectsCanceledCRN(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	client := validFakeVTClient()
 	client.search = foseSearch("60058", "C")
@@ -222,7 +223,7 @@ func TestAddRejectsCanceledCRN(t *testing.T) {
 }
 
 func TestAddRejectDoesNotSaveWatch(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	client := validFakeVTClient()
 	client.search = vt.FoseSearchResponse{}
@@ -246,7 +247,7 @@ func TestAddRejectDoesNotSaveWatch(t *testing.T) {
 }
 
 func TestSwapRejectsMissingDropRegistration(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
 
@@ -260,7 +261,7 @@ func TestSwapRejectsMissingDropRegistration(t *testing.T) {
 }
 
 func TestPollDueEmpty(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
 
@@ -274,7 +275,7 @@ func TestPollDueEmpty(t *testing.T) {
 }
 
 func TestPollDueEvaluatesDueWatches(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	now := fixedWatchNow()
 	watch := saveWatchForPoll(t, db, store.Watch{
@@ -311,7 +312,7 @@ func TestPollDueEvaluatesDueWatches(t *testing.T) {
 }
 
 func TestPollDueFetchesStudentDataOnceForMultipleWatches(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	now := fixedWatchNow()
 	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60058", Active: true, CreatedAt: now, UpdatedAt: now})
@@ -339,7 +340,7 @@ func TestPollDueFetchesStudentDataOnceForMultipleWatches(t *testing.T) {
 }
 
 func TestPollDueAllIncludesFutureActiveWatches(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	now := fixedWatchNow()
 	saveWatchForPoll(t, db, store.Watch{
@@ -363,7 +364,7 @@ func TestPollDueAllIncludesFutureActiveWatches(t *testing.T) {
 }
 
 func TestPollDueSkipsDisabledWatches(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	now := fixedWatchNow()
 	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60058", Active: false, CreatedAt: now, UpdatedAt: now})
@@ -383,7 +384,7 @@ func TestPollDueSkipsDisabledWatches(t *testing.T) {
 }
 
 func TestPollDueContinuesAfterPerWatchError(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	now := fixedWatchNow()
 	saveWatchForPoll(t, db, store.Watch{Term: "202609", Mode: ModeAdd, AddCRN: "60058", Active: true, CreatedAt: now, UpdatedAt: now})
@@ -411,8 +412,35 @@ func TestPollDueContinuesAfterPerWatchError(t *testing.T) {
 	}
 }
 
+func TestPollWatchSurfacesRescheduleWriteError(t *testing.T) {
+	db := storetest.NewDB(t)
+	now := fixedWatchNow()
+	watch := saveWatchForPoll(t, db, store.Watch{
+		Term:      "202609",
+		Mode:      ModeAdd,
+		AddCRN:    "60058",
+		Active:    true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	client := validFakeVTClient()
+	client.searchErrByCRN = map[string]error{"60058": errors.New("upstream failed")}
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	result := svc.pollWatch(context.Background(), watch, studentDataWithTicket(), now)
+	if result.Err == nil {
+		t.Fatal("pollWatch returned nil error")
+	}
+	if !strings.Contains(result.Err.Error(), "also failed to reschedule watch") {
+		t.Fatalf("error = %v, want reschedule write failure context", result.Err)
+	}
+}
+
 func TestPollDueDisablesHardRejectedWatch(t *testing.T) {
-	db := newWatchTestDB(t)
+	db := storetest.NewDB(t)
 	saveWatchTestSession(t, db)
 	now := fixedWatchNow()
 	watch := saveWatchForPoll(t, db, store.Watch{
@@ -452,19 +480,6 @@ func TestPollDueDisablesHardRejectedWatch(t *testing.T) {
 	if updated.Active {
 		t.Fatalf("stored watch remains active: %+v", updated)
 	}
-}
-
-func newWatchTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("Open returned error: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(context.Background(), db); err != nil {
-		t.Fatalf("Migrate returned error: %v", err)
-	}
-	return db
 }
 
 func saveWatchForPoll(t *testing.T, db *sql.DB, watch store.Watch) store.Watch {
