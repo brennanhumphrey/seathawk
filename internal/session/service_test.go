@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/brennanhumphrey/seathawk/internal/store"
+	"github.com/brennanhumphrey/seathawk/internal/storetest"
 	"github.com/brennanhumphrey/seathawk/internal/vt"
 )
 
@@ -25,7 +25,7 @@ func (f *fakeStudentDataClient) StudentData(ctx context.Context, authtoken strin
 }
 
 func TestImportValidSession(t *testing.T) {
-	db := newServiceTestDB(t)
+	db := storetest.NewDB(t)
 	client := &fakeStudentDataClient{data: studentData("person", "fresh-proof")}
 	now := fixedNow()
 	svc := Service{DB: db, VTClient: client, Now: func() time.Time { return now }}
@@ -49,7 +49,7 @@ func TestImportValidSession(t *testing.T) {
 }
 
 func TestImportUsesNowWhenCapturedAtMissing(t *testing.T) {
-	db := newServiceTestDB(t)
+	db := storetest.NewDB(t)
 	now := fixedNow()
 	svc := Service{
 		DB:       db,
@@ -82,7 +82,7 @@ func TestImportValidationErrorsDoNotSave(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db := newServiceTestDB(t)
+			db := storetest.NewDB(t)
 			svc := Service{DB: db, VTClient: tt.client, Now: fixedNow}
 			_, err := svc.Import(context.Background(), tt.payload)
 			if err == nil {
@@ -102,7 +102,7 @@ func TestImportValidationErrorsDoNotSave(t *testing.T) {
 
 func TestImportMissingFieldsDoNotCallVT(t *testing.T) {
 	client := &fakeStudentDataClient{data: studentData("person", "proof")}
-	svc := Service{DB: newServiceTestDB(t), VTClient: client, Now: fixedNow}
+	svc := Service{DB: storetest.NewDB(t), VTClient: client, Now: fixedNow}
 	_, err := svc.Import(context.Background(), CapturedCredentials{})
 	if err == nil {
 		t.Fatal("Import returned nil error")
@@ -113,7 +113,7 @@ func TestImportMissingFieldsDoNotCallVT(t *testing.T) {
 }
 
 func TestImportIgnoresLegacyCapturedIdentityFields(t *testing.T) {
-	db := newServiceTestDB(t)
+	db := storetest.NewDB(t)
 	svc := Service{
 		DB:       db,
 		VTClient: &fakeStudentDataClient{data: studentData("studentdata-person", "studentdata-proof")},
@@ -134,7 +134,7 @@ func TestImportIgnoresLegacyCapturedIdentityFields(t *testing.T) {
 }
 
 func TestValidateCurrentValid(t *testing.T) {
-	db := newServiceTestDB(t)
+	db := storetest.NewDB(t)
 	now := fixedNow()
 	saveStoredSession(t, db, "unknown", sql.NullTime{})
 	svc := Service{
@@ -159,13 +159,48 @@ func TestValidateCurrentValid(t *testing.T) {
 	}
 }
 
-func TestValidateCurrentInvalidOnVTError(t *testing.T) {
-	db := newServiceTestDB(t)
+func TestValidateCurrentPreservesStatusOnTransportError(t *testing.T) {
+	db := storetest.NewDB(t)
+	now := fixedNow()
+	previousValidation := sql.NullTime{Time: now.Add(-time.Hour), Valid: true}
+	saveStoredSession(t, db, "valid", previousValidation)
+	svc := Service{
+		DB:       db,
+		VTClient: &fakeStudentDataClient{err: errors.New("upstream failed")},
+		Now:      func() time.Time { return now },
+	}
+
+	result, err := svc.ValidateCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("ValidateCurrent returned error: %v", err)
+	}
+	if result.ValidationErr == nil {
+		t.Fatal("ValidateCurrent returned nil validation error")
+	}
+	got := result.Session
+	if got.Status != StatusValid {
+		t.Fatalf("Status = %q, want valid", got.Status)
+	}
+	if !got.LastValidatedAt.Valid || !got.LastValidatedAt.Time.Equal(previousValidation.Time) {
+		t.Fatalf("LastValidatedAt = %+v, want unchanged %+v", got.LastValidatedAt, previousValidation)
+	}
+
+	current, err := store.CurrentSession(context.Background(), db)
+	if err != nil {
+		t.Fatalf("CurrentSession returned error: %v", err)
+	}
+	if current.Status != StatusValid {
+		t.Fatalf("stored Status = %q, want valid", current.Status)
+	}
+}
+
+func TestValidateCurrentInvalidOnAuthError(t *testing.T) {
+	db := storetest.NewDB(t)
 	now := fixedNow()
 	saveStoredSession(t, db, "valid", sql.NullTime{})
 	svc := Service{
 		DB:       db,
-		VTClient: &fakeStudentDataClient{err: errors.New("upstream failed")},
+		VTClient: &fakeStudentDataClient{err: vt.HTTPError{Operation: "studentdata", StatusCode: 401}},
 		Now:      func() time.Time { return now },
 	}
 
@@ -183,7 +218,7 @@ func TestValidateCurrentInvalidOnVTError(t *testing.T) {
 }
 
 func TestValidateCurrentInvalidOnMismatch(t *testing.T) {
-	db := newServiceTestDB(t)
+	db := storetest.NewDB(t)
 	saveStoredSession(t, db, "valid", sql.NullTime{})
 	svc := Service{
 		DB:       db,
@@ -205,7 +240,7 @@ func TestValidateCurrentInvalidOnMismatch(t *testing.T) {
 }
 
 func TestValidateCurrentInvalidOnMissingFreshProof(t *testing.T) {
-	db := newServiceTestDB(t)
+	db := storetest.NewDB(t)
 	saveStoredSession(t, db, "valid", sql.NullTime{})
 	svc := Service{
 		DB:       db,
@@ -252,17 +287,4 @@ func saveStoredSession(t *testing.T, db *sql.DB, status string, lastValidatedAt 
 	}); err != nil {
 		t.Fatalf("SaveSession returned error: %v", err)
 	}
-}
-
-func newServiceTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("Open returned error: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(context.Background(), db); err != nil {
-		t.Fatalf("Migrate returned error: %v", err)
-	}
-	return db
 }

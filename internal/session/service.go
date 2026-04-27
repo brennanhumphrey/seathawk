@@ -8,16 +8,19 @@ package session
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/brennanhumphrey/seathawk/internal/sessionstatus"
 	"github.com/brennanhumphrey/seathawk/internal/store"
 	"github.com/brennanhumphrey/seathawk/internal/vt"
 )
 
 const (
-	StatusValid   = "valid"
-	StatusInvalid = "invalid"
+	StatusValid   = sessionstatus.StatusValid
+	StatusInvalid = sessionstatus.StatusInvalid
 )
 
 // CapturedCredentials is the JSON shape copied from the VT credential bookmarklet.
@@ -27,10 +30,8 @@ type CapturedCredentials struct {
 
 	// Legacy bookmarklets copied these fields too. Import deliberately ignores
 	// them because idProof may rotate and studentdata is the authoritative source.
-	PersID      string                  `json:"pers_id"`
-	PersIDProof string                  `json:"pers_id_proof"`
-	Name        string                  `json:"name"`
-	RegTickets  []vt.RegistrationTicket `json:"reg_tickets"`
+	PersID      string `json:"pers_id"`
+	PersIDProof string `json:"pers_id_proof"`
 }
 
 // StudentDataClient is the VT client behavior needed for session validation.
@@ -107,8 +108,14 @@ func (s Service) ValidateCurrent(ctx context.Context) (ValidationResult, error) 
 	studentData, err := s.VTClient.StudentData(ctx, current.Authtoken)
 	decision := validValidation(studentData.Pers.IDProof)
 	if err != nil {
-		// Preserve the row for audit/history, but mark it unusable for future
-		// workflows until the user imports or validates fresh credentials.
+		if !isAuthFailure(err) {
+			return ValidationResult{
+				Session:       current,
+				ValidationErr: fmt.Errorf("validate stored session: %w", err),
+			}, nil
+		}
+		// Preserve the row for audit/history, but only mark it unusable when VT
+		// explicitly rejects the credentials.
 		decision = invalidValidation(fmt.Errorf("validate stored session: %w", err))
 	} else if studentData.Pers.ID != current.PersID {
 		decision = invalidValidation(fmt.Errorf("stored session identity no longer matches VT studentdata"))
@@ -121,6 +128,14 @@ func (s Service) ValidateCurrent(ctx context.Context) (ValidationResult, error) 
 		return ValidationResult{}, err
 	}
 	return ValidationResult{Session: updated, ValidationErr: decision.ValidationErr}, nil
+}
+
+func isAuthFailure(err error) bool {
+	var httpErr vt.HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden
 }
 
 // Current returns the newest stored session without contacting VT.
