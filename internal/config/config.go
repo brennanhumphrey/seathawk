@@ -24,12 +24,19 @@ type Config struct {
 // If path is empty, Load uses SeatHawk's default per-user config location. If
 // that file does not exist yet, Load creates a default config and returns it.
 func Load(path string) (Config, error) {
+	var err error
 	if path == "" {
-		path = defaultConfigPath()
+		path, err = defaultConfigPath()
+		if err != nil {
+			return Config{}, err
+		}
 	}
 
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		cfg := defaultConfig(path)
+		cfg, err := defaultConfig(path)
+		if err != nil {
+			return Config{}, err
+		}
 		if err := writeDefaultConfig(path, cfg); err != nil {
 			return Config{}, err
 		}
@@ -48,34 +55,49 @@ func Load(path string) (Config, error) {
 
 	cfg.ConfigPath = path
 	if cfg.DatabasePath == "" {
-		cfg.DatabasePath = defaultDatabasePath()
+		cfg.DatabasePath, err = defaultDatabasePath()
+		if err != nil {
+			return Config{}, err
+		}
 	}
 
 	return cfg, nil
 }
 
-func defaultConfig(path string) Config {
+func defaultConfig(path string) (Config, error) {
+	databasePath, err := defaultDatabasePath()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		ConfigPath:   path,
-		DatabasePath: defaultDatabasePath(),
+		DatabasePath: databasePath,
+	}, nil
+}
+
+func defaultConfigPath() (string, error) {
+	dataDir, err := defaultDataDir()
+	if err != nil {
+		return "", err
 	}
+	return filepath.Join(dataDir, "config.json"), nil
 }
 
-func defaultConfigPath() string {
-	return filepath.Join(defaultDataDir(), "config.json")
+func defaultDatabasePath() (string, error) {
+	dataDir, err := defaultDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, "seathawk.db"), nil
 }
 
-func defaultDatabasePath() string {
-	return filepath.Join(defaultDataDir(), "seathawk.db")
-}
-
-func defaultDataDir() string {
+func defaultDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "."
+		return "", fmt.Errorf("resolve user home directory: %w", err)
 	}
 
-	return filepath.Join(home, ".config", "seathawk")
+	return filepath.Join(home, ".config", "seathawk"), nil
 }
 
 func writeDefaultConfig(path string, cfg Config) error {
