@@ -9,12 +9,29 @@ import (
 	"time"
 
 	"github.com/brennanhumphrey/seathawk/internal/store"
+	"github.com/brennanhumphrey/seathawk/internal/vt"
 )
 
-func TestAddCreatesActiveWatch(t *testing.T) {
-	svc := Service{DB: newWatchTestDB(t), Now: fixedWatchNow}
+type fakeVTClient struct {
+	studentData vt.StudentData
+	search      vt.FoseSearchResponse
+	err         error
+}
 
-	got, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
+func (f fakeVTClient) StudentData(ctx context.Context, authtoken string) (vt.StudentData, error) {
+	return f.studentData, f.err
+}
+
+func (f fakeVTClient) SearchByCRN(ctx context.Context, term, crn string) (vt.FoseSearchResponse, error) {
+	return f.search, f.err
+}
+
+func TestAddCreatesActiveWatch(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
+
+	got, eval, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
 	if err != nil {
 		t.Fatalf("Add returned error: %v", err)
 	}
@@ -24,12 +41,25 @@ func TestAddCreatesActiveWatch(t *testing.T) {
 	if got.DropCRN.Valid {
 		t.Fatalf("DropCRN.Valid = true, want false")
 	}
+	if !got.LastSeenStat.Valid || got.LastSeenStat.String != string(SectionFull) {
+		t.Fatalf("LastSeenStat = %+v, want full", got.LastSeenStat)
+	}
+	if !got.NextPollAt.Valid {
+		t.Fatal("NextPollAt is invalid")
+	}
+	if eval.SectionStatus != SectionFull {
+		t.Fatalf("SectionStatus = %q, want full", eval.SectionStatus)
+	}
 }
 
 func TestSwapCreatesActiveWatch(t *testing.T) {
-	svc := Service{DB: newWatchTestDB(t), Now: fixedWatchNow}
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	client := validFakeVTClient()
+	client.studentData.Registered = map[string][]string{"202609": []string{"60900|CS 3304||N|3|UG|misc"}}
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
 
-	got, err := svc.Swap(context.Background(), CreateSwapInput{
+	got, eval, err := svc.Swap(context.Background(), CreateSwapInput{
 		Term:    "202609",
 		AddCRN:  "60058",
 		DropCRN: "60900",
@@ -40,6 +70,9 @@ func TestSwapCreatesActiveWatch(t *testing.T) {
 	if got.Mode != ModeSwap || got.AddCRN != "60058" || !got.DropCRN.Valid || got.DropCRN.String != "60900" {
 		t.Fatalf("unexpected watch: %+v", got)
 	}
+	if eval.SectionStatus != SectionFull || !eval.RegisteredDrop {
+		t.Fatalf("unexpected evaluation: %+v", eval)
+	}
 }
 
 func TestServiceValidation(t *testing.T) {
@@ -48,23 +81,23 @@ func TestServiceValidation(t *testing.T) {
 		call func(Service) error
 	}{
 		{name: "invalid add term", call: func(s Service) error {
-			_, err := s.Add(context.Background(), CreateAddInput{Term: "2026", CRN: "60058"})
+			_, _, err := s.Add(context.Background(), CreateAddInput{Term: "2026", CRN: "60058"})
 			return err
 		}},
 		{name: "invalid add crn", call: func(s Service) error {
-			_, err := s.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "6005"})
+			_, _, err := s.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "6005"})
 			return err
 		}},
 		{name: "invalid swap add crn", call: func(s Service) error {
-			_, err := s.Swap(context.Background(), CreateSwapInput{Term: "202609", AddCRN: "abcde", DropCRN: "60900"})
+			_, _, err := s.Swap(context.Background(), CreateSwapInput{Term: "202609", AddCRN: "abcde", DropCRN: "60900"})
 			return err
 		}},
 		{name: "missing swap drop crn", call: func(s Service) error {
-			_, err := s.Swap(context.Background(), CreateSwapInput{Term: "202609", AddCRN: "60058"})
+			_, _, err := s.Swap(context.Background(), CreateSwapInput{Term: "202609", AddCRN: "60058"})
 			return err
 		}},
 		{name: "identical swap crns", call: func(s Service) error {
-			_, err := s.Swap(context.Background(), CreateSwapInput{Term: "202609", AddCRN: "60058", DropCRN: "60058"})
+			_, _, err := s.Swap(context.Background(), CreateSwapInput{Term: "202609", AddCRN: "60058", DropCRN: "60058"})
 			return err
 		}},
 	}
@@ -80,9 +113,11 @@ func TestServiceValidation(t *testing.T) {
 }
 
 func TestServiceTrimsInput(t *testing.T) {
-	svc := Service{DB: newWatchTestDB(t), Now: fixedWatchNow}
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
 
-	got, err := svc.Add(context.Background(), CreateAddInput{Term: " 202609 ", CRN: " 60058 "})
+	got, _, err := svc.Add(context.Background(), CreateAddInput{Term: " 202609 ", CRN: " 60058 "})
 	if err != nil {
 		t.Fatalf("Add returned error: %v", err)
 	}
@@ -92,8 +127,10 @@ func TestServiceTrimsInput(t *testing.T) {
 }
 
 func TestEnableDisable(t *testing.T) {
-	svc := Service{DB: newWatchTestDB(t), Now: fixedWatchNow}
-	watch, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
+	watch, _, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
 	if err != nil {
 		t.Fatalf("Add returned error: %v", err)
 	}
@@ -117,8 +154,9 @@ func TestEnableDisable(t *testing.T) {
 
 func TestRemove(t *testing.T) {
 	db := newWatchTestDB(t)
-	svc := Service{DB: db, Now: fixedWatchNow}
-	watch, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
+	saveWatchTestSession(t, db)
+	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
+	watch, _, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
 	if err != nil {
 		t.Fatalf("Add returned error: %v", err)
 	}
@@ -128,6 +166,60 @@ func TestRemove(t *testing.T) {
 	}
 	if _, err := store.WatchByID(context.Background(), db, watch.ID); !errors.Is(err, store.ErrNoWatch) {
 		t.Fatalf("WatchByID error = %v, want ErrNoWatch", err)
+	}
+}
+
+func TestAddRequiresCurrentSession(t *testing.T) {
+	svc := Service{DB: newWatchTestDB(t), VTClient: validFakeVTClient(), Now: fixedWatchNow}
+	_, _, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
+	if err == nil {
+		t.Fatal("Add returned nil error")
+	}
+}
+
+func TestAddRejectsAlreadyRegisteredCRN(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	client := validFakeVTClient()
+	client.studentData.Registered = map[string][]string{"202609": []string{"60058|CS 3304||N|3|UG|misc"}}
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	_, eval, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
+	if err == nil {
+		t.Fatal("Add returned nil error")
+	}
+	if !hasReject(eval, RejectAlreadyRegisteredAdd) {
+		t.Fatalf("HardRejects = %v, want %s", eval.HardRejects, RejectAlreadyRegisteredAdd)
+	}
+}
+
+func TestAddRejectsCanceledCRN(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	client := validFakeVTClient()
+	client.search = foseSearch("60058", "C")
+	svc := Service{DB: db, VTClient: client, Now: fixedWatchNow}
+
+	_, eval, err := svc.Add(context.Background(), CreateAddInput{Term: "202609", CRN: "60058"})
+	if err == nil {
+		t.Fatal("Add returned nil error")
+	}
+	if !hasReject(eval, RejectSectionCanceled) {
+		t.Fatalf("HardRejects = %v, want %s", eval.HardRejects, RejectSectionCanceled)
+	}
+}
+
+func TestSwapRejectsMissingDropRegistration(t *testing.T) {
+	db := newWatchTestDB(t)
+	saveWatchTestSession(t, db)
+	svc := Service{DB: db, VTClient: validFakeVTClient(), Now: fixedWatchNow}
+
+	_, eval, err := svc.Swap(context.Background(), CreateSwapInput{Term: "202609", AddCRN: "60058", DropCRN: "60900"})
+	if err == nil {
+		t.Fatal("Swap returned nil error")
+	}
+	if !hasReject(eval, RejectMissingDropRegistration) {
+		t.Fatalf("HardRejects = %v, want %s", eval.HardRejects, RejectMissingDropRegistration)
 	}
 }
 
@@ -142,6 +234,26 @@ func newWatchTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("Migrate returned error: %v", err)
 	}
 	return db
+}
+
+func saveWatchTestSession(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := store.SaveSession(context.Background(), db, store.Session{
+		Authtoken:   "token",
+		PersID:      "person",
+		PersIDProof: "proof",
+		CapturedAt:  fixedWatchNow(),
+		Status:      "valid",
+	}); err != nil {
+		t.Fatalf("SaveSession returned error: %v", err)
+	}
+}
+
+func validFakeVTClient() fakeVTClient {
+	return fakeVTClient{
+		studentData: studentDataWithTicket(),
+		search:      foseSearch("60058", "F"),
+	}
 }
 
 func fixedWatchNow() time.Time {

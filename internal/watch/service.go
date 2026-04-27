@@ -1,8 +1,8 @@
 // Package watch owns local watch-management workflow rules.
 //
-// A watch is durable user intent, not a VT request. This package deliberately
-// avoids VT calls so users can configure watches before later polling and
-// registration phases exist.
+// A watch is durable user intent, not a registration attempt. This package uses
+// read-only VT calls during creation to reject invalid or unsafe watches, then
+// stores the local intent that later polling/registration phases will consume.
 //
 // The split from internal/store is intentional: store knows how to read and
 // write rows, while watch knows what a valid SeatHawk watch means. That keeps
@@ -34,7 +34,8 @@ const (
 // should be able to depend on watches created here without re-validating basic
 // invariants like term/CRN shape or swap add/drop differences.
 type Service struct {
-	DB *sql.DB
+	DB       *sql.DB
+	VTClient VTClient
 	// Now is injectable so timestamp behavior can be tested deterministically.
 	Now func() time.Time
 }
@@ -59,53 +60,76 @@ type CreateSwapInput struct {
 
 // Add creates an active watch for adding one CRN.
 //
-// This only records intent. It does not check whether the CRN exists, whether a
-// seat is open, or whether the user's registration window is active; those are
-// read-only evaluation concerns for the next phase.
-func (s Service) Add(ctx context.Context, input CreateAddInput) (store.Watch, error) {
+// Full sections are valid watch targets: waiting for a full section to open is
+// the core use case. This method only rejects invalid or dangerous watches.
+func (s Service) Add(ctx context.Context, input CreateAddInput) (store.Watch, Evaluation, error) {
 	term, err := validateTerm(input.Term)
 	if err != nil {
-		return store.Watch{}, err
+		return store.Watch{}, Evaluation{}, err
 	}
 	crn, err := validateCRN(input.CRN)
 	if err != nil {
-		return store.Watch{}, err
+		return store.Watch{}, Evaluation{}, err
+	}
+	session, err := s.currentSession(ctx)
+	if err != nil {
+		return store.Watch{}, Evaluation{}, err
 	}
 
 	now := s.now()
-	return store.SaveWatch(ctx, s.DB, store.Watch{
+	watch := store.Watch{
 		Term:      term,
 		Mode:      ModeAdd,
 		AddCRN:    crn,
 		Active:    true,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	evaluation, err := Evaluate(ctx, s.VTClient, session, watch, now)
+	if err != nil {
+		return store.Watch{}, Evaluation{}, err
+	}
+	if evaluation.HasHardRejects() {
+		return store.Watch{}, evaluation, fmt.Errorf("watch rejected: %s", formatRejects(evaluation.HardRejects))
+	}
+
+	nextPollAt := nextPollTime(now)
+	watch = withInitialEvaluationMetadata(watch, evaluation, nextPollAt)
+
+	saved, err := store.SaveWatch(ctx, s.DB, watch)
+	if err != nil {
+		return store.Watch{}, Evaluation{}, err
+	}
+	return saved, evaluation, nil
 }
 
 // Swap creates an active watch for adding one CRN while dropping another.
 //
 // Keeping swap as a first-class mode matters because later registration logic
 // must use stricter guardrails and reconciliation for add/drop workflows.
-func (s Service) Swap(ctx context.Context, input CreateSwapInput) (store.Watch, error) {
+func (s Service) Swap(ctx context.Context, input CreateSwapInput) (store.Watch, Evaluation, error) {
 	term, err := validateTerm(input.Term)
 	if err != nil {
-		return store.Watch{}, err
+		return store.Watch{}, Evaluation{}, err
 	}
 	addCRN, err := validateCRN(input.AddCRN)
 	if err != nil {
-		return store.Watch{}, fmt.Errorf("add crn: %w", err)
+		return store.Watch{}, Evaluation{}, fmt.Errorf("add crn: %w", err)
 	}
 	dropCRN, err := validateCRN(input.DropCRN)
 	if err != nil {
-		return store.Watch{}, fmt.Errorf("drop crn: %w", err)
+		return store.Watch{}, Evaluation{}, fmt.Errorf("drop crn: %w", err)
 	}
 	if addCRN == dropCRN {
-		return store.Watch{}, fmt.Errorf("add_crn and drop_crn must be different")
+		return store.Watch{}, Evaluation{}, fmt.Errorf("add_crn and drop_crn must be different")
+	}
+	session, err := s.currentSession(ctx)
+	if err != nil {
+		return store.Watch{}, Evaluation{}, err
 	}
 
 	now := s.now()
-	return store.SaveWatch(ctx, s.DB, store.Watch{
+	watch := store.Watch{
 		Term:      term,
 		Mode:      ModeSwap,
 		AddCRN:    addCRN,
@@ -113,7 +137,23 @@ func (s Service) Swap(ctx context.Context, input CreateSwapInput) (store.Watch, 
 		Active:    true,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	evaluation, err := Evaluate(ctx, s.VTClient, session, watch, now)
+	if err != nil {
+		return store.Watch{}, Evaluation{}, err
+	}
+	if evaluation.HasHardRejects() {
+		return store.Watch{}, evaluation, fmt.Errorf("watch rejected: %s", formatRejects(evaluation.HardRejects))
+	}
+
+	nextPollAt := nextPollTime(now)
+	watch = withInitialEvaluationMetadata(watch, evaluation, nextPollAt)
+
+	saved, err := store.SaveWatch(ctx, s.DB, watch)
+	if err != nil {
+		return store.Watch{}, Evaluation{}, err
+	}
+	return saved, evaluation, nil
 }
 
 // List returns all watches, including disabled watches.
@@ -142,6 +182,37 @@ func (s Service) Remove(ctx context.Context, id int64) error {
 	// Hard delete is acceptable while watches have no attempt history. Once
 	// attempts are populated, remove should preserve auditability.
 	return store.DeleteWatch(ctx, s.DB, id)
+}
+
+func (s Service) currentSession(ctx context.Context) (store.Session, error) {
+	session, err := store.CurrentSession(ctx, s.DB)
+	if err != nil {
+		return store.Session{}, fmt.Errorf("load current session: %w", err)
+	}
+	if session.Status != "valid" {
+		return store.Session{}, fmt.Errorf("current session is %s; run session validate or import fresh credentials", session.Status)
+	}
+	return session, nil
+}
+
+func nextPollTime(now time.Time) time.Time {
+	return now.UTC().Add(30 * time.Second)
+}
+
+func withInitialEvaluationMetadata(watch store.Watch, evaluation Evaluation, nextPollAt time.Time) store.Watch {
+	if evaluation.SectionStatus != "" {
+		watch.LastSeenStat = sql.NullString{String: string(evaluation.SectionStatus), Valid: true}
+	}
+	watch.NextPollAt = sql.NullTime{Time: nextPollAt.UTC(), Valid: true}
+	return watch
+}
+
+func formatRejects(rejects []RejectReason) string {
+	parts := make([]string, 0, len(rejects))
+	for _, reject := range rejects {
+		parts = append(parts, string(reject))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func validateTerm(term string) (string, error) {
