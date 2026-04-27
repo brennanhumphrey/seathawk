@@ -161,10 +161,3 @@ func UpdateSessionValidation(ctx context.Context, db *sql.DB, id int64, status s
 	}
 	return nil
 }
-
-func nullTimeValue(value sql.NullTime) any {
-	if !value.Valid {
-		return nil
-	}
-	return value.Time.UTC()
-}

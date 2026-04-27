@@ -11,6 +11,20 @@ import (
 // ErrNoWatch means no watch exists for the requested ID.
 var ErrNoWatch = errors.New("no watch found")
 
+const watchColumns = `
+	id,
+	term,
+	mode,
+	add_crn,
+	drop_crn,
+	active,
+	last_seen_stat,
+	next_poll_at,
+	last_attempt_at,
+	created_at,
+	updated_at
+`
+
 // Watch is one durable user intent row from the watches table.
 //
 // The watch row is intentionally broader than the current Phase 5 CLI needs.
@@ -79,65 +93,32 @@ func SaveWatch(ctx context.Context, db *sql.DB, watch Watch) (Watch, error) {
 // Disabled watches are intentionally included. "Inactive" means paused, not
 // forgotten, and hiding paused watches would make the CLI misleading.
 func ListWatches(ctx context.Context, db *sql.DB) ([]Watch, error) {
-	return listWatchesByQuery(ctx, db, `
-		SELECT
-			id,
-			term,
-			mode,
-			add_crn,
-			drop_crn,
-			active,
-			last_seen_stat,
-			next_poll_at,
-			last_attempt_at,
-			created_at,
-			updated_at
+	return listWatchesByQuery(ctx, db, fmt.Sprintf(`
+		SELECT %s
 		FROM watches
 		ORDER BY id ASC
-	`)
+	`, watchColumns))
 }
 
 // ListActiveWatches returns every active watch in creation order.
 func ListActiveWatches(ctx context.Context, db *sql.DB) ([]Watch, error) {
-	return listWatchesByQuery(ctx, db, `
-		SELECT
-			id,
-			term,
-			mode,
-			add_crn,
-			drop_crn,
-			active,
-			last_seen_stat,
-			next_poll_at,
-			last_attempt_at,
-			created_at,
-			updated_at
+	return listWatchesByQuery(ctx, db, fmt.Sprintf(`
+		SELECT %s
 		FROM watches
 		WHERE active = 1
 		ORDER BY id ASC
-	`)
+	`, watchColumns))
 }
 
 // ListDueActiveWatches returns active watches whose poll time has arrived.
 func ListDueActiveWatches(ctx context.Context, db *sql.DB, now time.Time) ([]Watch, error) {
-	return listWatchesByQuery(ctx, db, `
-		SELECT
-			id,
-			term,
-			mode,
-			add_crn,
-			drop_crn,
-			active,
-			last_seen_stat,
-			next_poll_at,
-			last_attempt_at,
-			created_at,
-			updated_at
+	return listWatchesByQuery(ctx, db, fmt.Sprintf(`
+		SELECT %s
 		FROM watches
 		WHERE active = 1
 			AND (next_poll_at IS NULL OR next_poll_at <= ?)
 		ORDER BY next_poll_at IS NOT NULL, next_poll_at ASC, id ASC
-	`, now.UTC())
+	`, watchColumns), now.UTC())
 }
 
 func listWatchesByQuery(ctx context.Context, db *sql.DB, query string, args ...any) ([]Watch, error) {
@@ -163,22 +144,11 @@ func listWatchesByQuery(ctx context.Context, db *sql.DB, query string, args ...a
 
 // WatchByID returns one watch by primary key.
 func WatchByID(ctx context.Context, db *sql.DB, id int64) (Watch, error) {
-	row := db.QueryRowContext(ctx, `
-		SELECT
-			id,
-			term,
-			mode,
-			add_crn,
-			drop_crn,
-			active,
-			last_seen_stat,
-			next_poll_at,
-			last_attempt_at,
-			created_at,
-			updated_at
+	row := db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM watches
 		WHERE id = ?
-	`, id)
+	`, watchColumns), id)
 
 	watch, err := scanWatch(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -286,22 +256,4 @@ func scanWatch(scanner watchScanner) (Watch, error) {
 	}
 	watch.Active = intToBool(active)
 	return watch, nil
-}
-
-func nullStringValue(value sql.NullString) any {
-	if !value.Valid {
-		return nil
-	}
-	return value.String
-}
-
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
-func intToBool(value int) bool {
-	return value != 0
 }
