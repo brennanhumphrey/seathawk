@@ -123,6 +123,48 @@ func TestSetWatchActive(t *testing.T) {
 	}
 }
 
+func TestUpdateWatchEvaluation(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := fixedStoreTime()
+
+	saved, err := SaveWatch(ctx, db, Watch{
+		Term:      "202609",
+		Mode:      "add",
+		AddCRN:    "60058",
+		Active:    true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("SaveWatch returned error: %v", err)
+	}
+
+	nextPollAt := now.Add(30 * time.Second)
+	updatedAt := now.Add(time.Minute)
+	if err := UpdateWatchEvaluation(ctx, db, saved.ID,
+		sql.NullString{String: "full", Valid: true},
+		sql.NullTime{Time: nextPollAt, Valid: true},
+		updatedAt,
+	); err != nil {
+		t.Fatalf("UpdateWatchEvaluation returned error: %v", err)
+	}
+
+	got, err := WatchByID(ctx, db, saved.ID)
+	if err != nil {
+		t.Fatalf("WatchByID returned error: %v", err)
+	}
+	if !got.LastSeenStat.Valid || got.LastSeenStat.String != "full" {
+		t.Fatalf("LastSeenStat = %+v, want full", got.LastSeenStat)
+	}
+	if !got.NextPollAt.Valid || !got.NextPollAt.Time.Equal(nextPollAt) {
+		t.Fatalf("NextPollAt = %+v, want %s", got.NextPollAt, nextPollAt)
+	}
+	if !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("UpdatedAt = %s, want %s", got.UpdatedAt, updatedAt)
+	}
+}
+
 func TestDeleteWatch(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -156,6 +198,9 @@ func TestWatchNotFound(t *testing.T) {
 	}
 	if err := SetWatchActive(ctx, db, 999, true, fixedStoreTime()); !errors.Is(err, ErrNoWatch) {
 		t.Fatalf("SetWatchActive error = %v, want ErrNoWatch", err)
+	}
+	if err := UpdateWatchEvaluation(ctx, db, 999, sql.NullString{}, sql.NullTime{}, fixedStoreTime()); !errors.Is(err, ErrNoWatch) {
+		t.Fatalf("UpdateWatchEvaluation error = %v, want ErrNoWatch", err)
 	}
 	if err := DeleteWatch(ctx, db, 999); !errors.Is(err, ErrNoWatch) {
 		t.Fatalf("DeleteWatch error = %v, want ErrNoWatch", err)

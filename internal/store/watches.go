@@ -25,7 +25,7 @@ type Watch struct {
 	AddCRN        string
 	DropCRN       sql.NullString // Only valid for swap watches.
 	Active        bool
-	LastSeenStat  sql.NullString // Future fose section status, for example "A" or "C".
+	LastSeenStat  sql.NullString // Last normalized fose section status, for example "full" or "open".
 	NextPollAt    sql.NullTime   // Future scheduler timestamp for the next read-only availability check.
 	LastAttemptAt sql.NullTime   // Future registration-attempt timestamp.
 	CreatedAt     time.Time
@@ -159,6 +159,34 @@ func SetWatchActive(ctx context.Context, db *sql.DB, id int64, active bool, upda
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read watch active update count: %w", err)
+	}
+	if rows == 0 {
+		return ErrNoWatch
+	}
+	return nil
+}
+
+// UpdateWatchEvaluation records the latest read-only evaluation metadata.
+//
+// This is the polling counterpart to SaveWatch's initial metadata insert:
+// future daemon runs can refresh seat status and next poll time without
+// changing the user's watch intent.
+func UpdateWatchEvaluation(ctx context.Context, db *sql.DB, id int64, lastSeenStat sql.NullString, nextPollAt sql.NullTime, updatedAt time.Time) error {
+	result, err := db.ExecContext(ctx, `
+		UPDATE watches
+		SET
+			last_seen_stat = ?,
+			next_poll_at = ?,
+			updated_at = ?
+		WHERE id = ?
+	`, nullStringValue(lastSeenStat), nullTimeValue(nextPollAt), updatedAt.UTC(), id)
+	if err != nil {
+		return fmt.Errorf("update watch evaluation: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read watch evaluation update count: %w", err)
 	}
 	if rows == 0 {
 		return ErrNoWatch
