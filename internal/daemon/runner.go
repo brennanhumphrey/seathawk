@@ -49,20 +49,28 @@ func (r Runner) Run(ctx context.Context) error {
 
 	logger.Printf("daemon starting interval=%s", interval)
 	for {
+		// Treat cancellation as normal shutdown. Ctrl-C/SIGTERM should stop the
+		// daemon without surfacing an error to the CLI.
 		if ctx.Err() != nil {
 			return nil
 		}
 
+		// The daemon intentionally uses the due-watch path only. Forced polling
+		// stays behind `watch poll --all` so unattended runs respect next_poll_at.
 		report, err := r.Poller.PollDue(ctx, watch.PollInput{})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
+			// Session expiry, VT downtime, and network failures are expected
+			// operational states. Log them and retry on the next interval.
 			logger.Printf("poll error: %v", err)
 		} else {
 			logPollReport(logger, report)
 		}
 
+		// Sleep after every pass, including empty or failed passes, so the daemon
+		// cannot hot-loop when there is nothing to do or VT is temporarily broken.
 		if err := sleep(ctx, interval); err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -72,6 +80,7 @@ func (r Runner) Run(ctx context.Context) error {
 	}
 }
 
+// interval resolves the configured poll interval to the daemon default.
 func (r Runner) interval() time.Duration {
 	if r.Interval > 0 {
 		return r.Interval
@@ -79,6 +88,7 @@ func (r Runner) interval() time.Duration {
 	return watch.DefaultPollInterval
 }
 
+// logger resolves the configured logger to the process default logger.
 func (r Runner) logger() Logger {
 	if r.Logger != nil {
 		return r.Logger
@@ -86,6 +96,7 @@ func (r Runner) logger() Logger {
 	return log.Default()
 }
 
+// sleep resolves the configured sleep hook to the real context-aware sleeper.
 func (r Runner) sleep() func(context.Context, time.Duration) error {
 	if r.Sleep != nil {
 		return r.Sleep
@@ -93,6 +104,7 @@ func (r Runner) sleep() func(context.Context, time.Duration) error {
 	return defaultSleep
 }
 
+// defaultSleep waits for duration or returns early when the context is canceled.
 func defaultSleep(ctx context.Context, duration time.Duration) error {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
@@ -105,6 +117,7 @@ func defaultSleep(ctx context.Context, duration time.Duration) error {
 	}
 }
 
+// logPollReport writes a compact daemon-oriented summary of one polling pass.
 func logPollReport(logger Logger, report watch.PollReport) {
 	checkedAt := report.CheckedAt.UTC().Format(time.RFC3339)
 	if len(report.Results) == 0 {
