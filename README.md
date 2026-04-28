@@ -4,8 +4,9 @@ SeatHawk is a single-user Go CLI for monitoring Virginia Tech course seats and,
 eventually, attempting registration with the user's own local VT session.
 
 Current status: the app can import/validate a VT session, create live-checked
-local watch definitions, and run a continuous read-only polling daemon. It does
-**not** register/drop courses yet.
+local watch definitions, run a continuous read-only polling daemon, and run an
+explicit manual single-CRN add attempt. The daemon does **not** register/drop
+courses automatically yet.
 
 ## Quick Start
 
@@ -119,6 +120,42 @@ Polling refreshes local watch metadata such as `last_seen_stat` and
 `next_poll_at`. It only reads VT `studentdata` and `fose`; it does not add a
 class to the cart, preflight registration, register, drop, or swap anything.
 
+## Attempt Manual Registration
+
+Manual registration attempts are separate from polling. This is intentional:
+the first VT write path should be explicit, auditable, and easy to test before
+any daemon auto-registration behavior exists.
+
+Attempt one existing add watch:
+
+```sh
+go run ./cmd/seathawk register attempt <watch-id> --confirm
+```
+
+The `--confirm` flag is required because this command can submit a real VT
+registration attempt. The command currently supports add watches only. Swap
+registration is not enabled yet.
+
+Before any VT write, SeatHawk:
+
+- loads the current valid session
+- fetches fresh `studentdata`
+- searches the add CRN in `fose`
+- verifies the CRN exists, is open, is not already registered, and the
+  registration window allows add
+- runs VT `preflight`
+
+If those checks pass, SeatHawk stages the CRN with `cart_add`, submits exactly
+one `shockabsorber register` call, polls `shockabsorber status`, and then
+confirms the final state with fresh `studentdata`. Fresh `studentdata` is the
+source of truth; shockabsorber text is treated as diagnostic output, not final
+proof.
+
+SeatHawk records attempt audit rows locally. On confirmed success, the watch is
+disabled so it will not be attempted again. Failed or ambiguous attempts keep
+the watch active, but update `last_attempt_at`. Cart cleanup is intentionally
+not automatic yet.
+
 ## Run The Daemon
 
 After importing a valid session and creating watches, start continuous read-only
@@ -160,6 +197,7 @@ internal/store/    SQLite setup and persistence helpers
 internal/session/  VT session import and validation workflow
 internal/vt/       VT protocol client and response parsing
 internal/watch/    Local watch validation and workflow rules
+internal/register/ Explicit manual registration-attempt orchestration
 docs/              VT API reference and planning notes
 ```
 
@@ -172,7 +210,7 @@ does SQLite reads/writes.
 ```text
 CLI command
   -> config.Load + store.Open + store.Migrate
-  -> session.Service or watch.Service
+  -> session.Service, watch.Service, or register.Service
   -> store helpers
   -> local SQLite database
 ```
@@ -186,7 +224,8 @@ status.
 The `watches` table has fields such as `last_seen_stat`, `next_poll_at`, and
 `last_attempt_at`. Watch creation fills the initial section status and first
 poll time. `watch poll` and `run` refresh the read-only scheduler metadata.
-Registration-attempt history still comes later.
+`register attempt` reuses the same watch evaluation rules before performing the
+VT write sequence and records phase-level history in the `attempts` table.
 
 ## Verification
 
