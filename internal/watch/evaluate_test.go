@@ -24,9 +24,9 @@ func TestEvaluateSectionStatuses(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := evaluateFromSnapshots(addWatch("60058"), studentDataWithTicket(), foseSearch("60058", tt.stat), fixedWatchNow())
+			got, err := EvaluateFromSnapshots(addWatch("60058"), studentDataWithTicket(), foseSearch("60058", tt.stat), fixedWatchNow())
 			if err != nil {
-				t.Fatalf("evaluateFromSnapshots returned error: %v", err)
+				t.Fatalf("EvaluateFromSnapshots returned error: %v", err)
 			}
 			if got.SectionStatus != tt.wantStatus {
 				t.Fatalf("SectionStatus = %q, want %q", got.SectionStatus, tt.wantStatus)
@@ -42,9 +42,9 @@ func TestEvaluateSectionStatuses(t *testing.T) {
 }
 
 func TestEvaluateCRNNotFound(t *testing.T) {
-	got, err := evaluateFromSnapshots(addWatch("60058"), studentDataWithTicket(), vt.FoseSearchResponse{}, fixedWatchNow())
+	got, err := EvaluateFromSnapshots(addWatch("60058"), studentDataWithTicket(), vt.FoseSearchResponse{}, fixedWatchNow())
 	if err != nil {
-		t.Fatalf("evaluateFromSnapshots returned error: %v", err)
+		t.Fatalf("EvaluateFromSnapshots returned error: %v", err)
 	}
 	if !hasReject(got, RejectCRNNotFound) {
 		t.Fatalf("HardRejects = %v, want %s", got.HardRejects, RejectCRNNotFound)
@@ -55,9 +55,9 @@ func TestEvaluateAlreadyRegisteredAdd(t *testing.T) {
 	studentData := studentDataWithTicket()
 	studentData.Registered = map[string][]string{"202609": []string{"60058|CS 3304||N|3|UG|misc"}}
 
-	got, err := evaluateFromSnapshots(addWatch("60058"), studentData, foseSearch("60058", "F"), fixedWatchNow())
+	got, err := EvaluateFromSnapshots(addWatch("60058"), studentData, foseSearch("60058", "F"), fixedWatchNow())
 	if err != nil {
-		t.Fatalf("evaluateFromSnapshots returned error: %v", err)
+		t.Fatalf("EvaluateFromSnapshots returned error: %v", err)
 	}
 	if !hasReject(got, RejectAlreadyRegisteredAdd) {
 		t.Fatalf("HardRejects = %v, want %s", got.HardRejects, RejectAlreadyRegisteredAdd)
@@ -79,9 +79,9 @@ func TestEvaluateSwapDropRegistration(t *testing.T) {
 			studentData := studentDataWithTicket()
 			studentData.Registered = map[string][]string{"202609": tt.registered}
 
-			got, err := evaluateFromSnapshots(swapWatch("60058", "60900"), studentData, foseSearch("60058", "F"), fixedWatchNow())
+			got, err := EvaluateFromSnapshots(swapWatch("60058", "60900"), studentData, foseSearch("60058", "F"), fixedWatchNow())
 			if err != nil {
-				t.Fatalf("evaluateFromSnapshots returned error: %v", err)
+				t.Fatalf("EvaluateFromSnapshots returned error: %v", err)
 			}
 			if tt.wantReject && !hasReject(got, RejectMissingDropRegistration) {
 				t.Fatalf("HardRejects = %v, want %s", got.HardRejects, RejectMissingDropRegistration)

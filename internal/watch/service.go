@@ -184,8 +184,9 @@ func (s Service) Disable(ctx context.Context, id int64) (store.Watch, error) {
 
 // Remove deletes one watch.
 func (s Service) Remove(ctx context.Context, id int64) error {
-	// Hard delete is acceptable while watches have no attempt history. Once
-	// attempts are populated, remove should preserve auditability.
+	// Store-level foreign keys prevent deleting a watch once registration-attempt
+	// history exists. Users should disable attempted watches to preserve audit
+	// history while stopping future automation.
 	return store.DeleteWatch(ctx, s.DB, id)
 }
 

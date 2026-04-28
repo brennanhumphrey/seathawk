@@ -96,7 +96,7 @@ func (s Service) pollWatch(ctx context.Context, watch store.Watch, studentData v
 		return result
 	}
 
-	evaluation, err := evaluateFromSnapshots(watch, studentData, search, now)
+	evaluation, err := EvaluateFromSnapshots(watch, studentData, search, now)
 	if err != nil {
 		result.Err = err
 		updated, updateErr := s.rescheduleAfterPollError(ctx, watch, now)

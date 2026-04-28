@@ -101,10 +101,16 @@ func Evaluate(ctx context.Context, client VTClient, session store.Session, watch
 		return Evaluation{}, fmt.Errorf("search add CRN: %w", err)
 	}
 
-	return evaluateFromSnapshots(watch, studentData, search, now)
+	return EvaluateFromSnapshots(watch, studentData, search, now)
 }
 
-func evaluateFromSnapshots(watch store.Watch, studentData vt.StudentData, search vt.FoseSearchResponse, now time.Time) (Evaluation, error) {
+// EvaluateFromSnapshots applies watch safety rules to already-fetched VT data.
+//
+// Polling and registration both need the same interpretation of fose,
+// studentdata, and registration-window state. Exporting this snapshot evaluator
+// prevents the registration package from duplicating safety logic before it
+// performs VT write operations.
+func EvaluateFromSnapshots(watch store.Watch, studentData vt.StudentData, search vt.FoseSearchResponse, now time.Time) (Evaluation, error) {
 	evaluation := Evaluation{
 		SectionStatus: SectionUnknown,
 		Window:        evaluateWindow(studentData, watch.Term, watch.Mode, now),
