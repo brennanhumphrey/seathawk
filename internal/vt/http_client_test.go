@@ -147,6 +147,40 @@ func TestCartRead(t *testing.T) {
 	}
 }
 
+func TestCartAdd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireGETQuery(t, r, map[string]string{
+			"page":      "sisproxy",
+			"action":    "cart_add",
+			"term_code": "202606",
+			"cart_name": "default",
+			"crn":       "60058",
+			"hours":     "3",
+			"gmod":      "N",
+			"reg_info":  "E",
+			"authtoken": "secret-token",
+		})
+		_, _ = w.Write([]byte(`setCart({"cart":["202606|default|60058|3||||AAEC 2104||N|||E|||||"]})`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, err := client.CartAdd(context.Background(), CartAddInput{
+		Authtoken: "secret-token",
+		Term:      "202606",
+		CRN:       "60058",
+		Hours:     "3",
+		GradeMode: "N",
+		RegInfo:   "E",
+	})
+	if err != nil {
+		t.Fatalf("CartAdd returned error: %v", err)
+	}
+	if len(got.Cart) != 1 {
+		t.Fatalf("cart length = %d, want 1", len(got.Cart))
+	}
+}
+
 func TestPreflight(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requireGETQuery(t, r, map[string]string{
@@ -171,6 +205,93 @@ func TestPreflight(t *testing.T) {
 	}
 }
 
+func TestShockabsorberRegister(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requirePOSTForm(t, r, map[string]string{
+			"authtoken":      "secret-token",
+			"_pers_id":       "person-id",
+			"_pers_id_proof": "person-proof",
+			"_pers_real_id":  "person-id",
+		})
+		query := r.URL.Query()
+		for key, want := range map[string]string{
+			"page":        "shockabsorber",
+			"time_ticket": "ticket|person-id",
+			"action":      "register",
+			"cart_name":   "default",
+			"url_replay":  "api/?page=sisproxy&action=register&term_code=202606&crn=60058&wait_crn=&swap_crn=",
+		} {
+			if got := query.Get(key); got != want {
+				t.Fatalf("%s = %q, want %q", key, got, want)
+			}
+		}
+
+		_, _ = w.Write([]byte(`{"body":"WAIT","code":200,"data":{"id":"144260"}}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, err := client.ShockabsorberRegister(context.Background(), ShockabsorberRegisterInput{
+		Credentials: ShockabsorberCredentials{
+			Authtoken:     "secret-token",
+			PersonID:      "person-id",
+			PersonIDProof: "person-proof",
+		},
+		TimeTicket: "ticket|person-id",
+		URLReplay:  "api/?page=sisproxy&action=register&term_code=202606&crn=60058&wait_crn=&swap_crn=",
+	})
+	if err != nil {
+		t.Fatalf("ShockabsorberRegister returned error: %v", err)
+	}
+	if got.Body != "WAIT" || got.Code != 200 {
+		t.Fatalf("unexpected shockabsorber response: %+v", got)
+	}
+}
+
+func TestShockabsorberStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requirePOSTForm(t, r, map[string]string{
+			"authtoken":      "secret-token",
+			"_pers_id":       "person-id",
+			"_pers_id_proof": "person-proof",
+			"_pers_real_id":  "person-id",
+		})
+		query := r.URL.Query()
+		for key, want := range map[string]string{
+			"page":        "shockabsorber",
+			"time_ticket": "ticket|person-id",
+			"action":      "status",
+			"cart_name":   "default",
+		} {
+			if got := query.Get(key); got != want {
+				t.Fatalf("%s = %q, want %q", key, got, want)
+			}
+		}
+		if got := query.Get("url_replay"); got != "" {
+			t.Fatalf("url_replay = %q, want empty", got)
+		}
+
+		_, _ = w.Write([]byte(`{"body":"PROCESSED","code":200,"data":{"reg_success":["60058"]}}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, err := client.ShockabsorberStatus(context.Background(), ShockabsorberStatusInput{
+		Credentials: ShockabsorberCredentials{
+			Authtoken:     "secret-token",
+			PersonID:      "person-id",
+			PersonIDProof: "person-proof",
+		},
+		TimeTicket: "ticket|person-id",
+	})
+	if err != nil {
+		t.Fatalf("ShockabsorberStatus returned error: %v", err)
+	}
+	if got.Body != "PROCESSED" || got.Code != 200 {
+		t.Fatalf("unexpected shockabsorber response: %+v", got)
+	}
+}
+
 func TestClientValidationDoesNotMakeRequest(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +308,10 @@ func TestClientValidationDoesNotMakeRequest(t *testing.T) {
 		{name: "search empty crn", call: func() error { _, err := client.SearchByCRN(context.Background(), "202606", ""); return err }},
 		{name: "studentdata empty token", call: func() error { _, err := client.StudentData(context.Background(), ""); return err }},
 		{name: "cart empty token", call: func() error { _, err := client.CartRead(context.Background(), ""); return err }},
+		{name: "cart add missing hours", call: func() error {
+			_, err := client.CartAdd(context.Background(), CartAddInput{Authtoken: "token", Term: "202606", CRN: "60058", GradeMode: "N", RegInfo: "E"})
+			return err
+		}},
 		{name: "preflight empty term", call: func() error {
 			_, err := client.Preflight(context.Background(), "token", "", []string{"60058"})
 			return err
@@ -194,6 +319,20 @@ func TestClientValidationDoesNotMakeRequest(t *testing.T) {
 		{name: "preflight empty crns", call: func() error { _, err := client.Preflight(context.Background(), "token", "202606", nil); return err }},
 		{name: "preflight empty crn value", call: func() error {
 			_, err := client.Preflight(context.Background(), "token", "202606", []string{"60058", ""})
+			return err
+		}},
+		{name: "shockabsorber register missing replay", call: func() error {
+			_, err := client.ShockabsorberRegister(context.Background(), ShockabsorberRegisterInput{
+				Credentials: ShockabsorberCredentials{Authtoken: "token", PersonID: "person", PersonIDProof: "proof"},
+				TimeTicket:  "ticket",
+			})
+			return err
+		}},
+		{name: "shockabsorber status missing proof", call: func() error {
+			_, err := client.ShockabsorberStatus(context.Background(), ShockabsorberStatusInput{
+				Credentials: ShockabsorberCredentials{Authtoken: "token", PersonID: "person"},
+				TimeTicket:  "ticket",
+			})
 			return err
 		}},
 	}
@@ -297,6 +436,28 @@ func requireGETQuery(t *testing.T, r *http.Request, want map[string]string) {
 	for key, value := range want {
 		if got := query.Get(key); got != value {
 			t.Fatalf("%s = %q, want %q", key, got, value)
+		}
+	}
+}
+
+func requirePOSTForm(t *testing.T, r *http.Request, want map[string]string) {
+	t.Helper()
+
+	if r.Method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", r.Method)
+	}
+	if r.URL.Path != "/api/" {
+		t.Fatalf("path = %s, want /api/", r.URL.Path)
+	}
+	if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+		t.Fatalf("Content-Type = %q, want application/x-www-form-urlencoded", got)
+	}
+	if err := r.ParseForm(); err != nil {
+		t.Fatalf("ParseForm returned error: %v", err)
+	}
+	for key, value := range want {
+		if got := r.Form.Get(key); got != value {
+			t.Fatalf("form %s = %q, want %q", key, got, value)
 		}
 	}
 }

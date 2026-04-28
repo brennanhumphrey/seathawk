@@ -45,6 +45,19 @@ type CartResponse struct {
 	Cart []string `json:"cart"`
 }
 
+// CartAddInput is the sisproxy cart_add request for staging one add CRN.
+//
+// Cart staging is a VT write operation. The registration package uses it only
+// after fresh safety checks prove the add is currently allowed to proceed.
+type CartAddInput struct {
+	Authtoken string
+	Term      string
+	CRN       string
+	Hours     string
+	GradeMode string
+	RegInfo   string
+}
+
 // Person is the minimal authenticated-person shape from studentdata.
 //
 // ID and IDProof are not Banner IDs. They are opaque signed values that later
@@ -64,4 +77,45 @@ type Person struct {
 type PreflightResponse struct {
 	RegCourseErrors    map[string]string `json:"reg_course_errors"`
 	RegNonCourseErrors []string          `json:"reg_non-course_errors"`
+}
+
+// ShockabsorberCredentials are the identity fields VT requires in POST bodies.
+//
+// authtoken authenticates the browser session; PersonID and PersonIDProof come
+// from fresh studentdata and prove which student record shockabsorber should
+// submit against.
+type ShockabsorberCredentials struct {
+	Authtoken     string
+	PersonID      string
+	PersonIDProof string
+}
+
+// ShockabsorberRegisterInput is the actual Banner registration queue request.
+//
+// TimeTicket and URLReplay are placed in the query string by the client.
+// Credentials are sent in the form body, matching the browser's request shape.
+type ShockabsorberRegisterInput struct {
+	Credentials ShockabsorberCredentials
+	TimeTicket  string
+	URLReplay   string
+}
+
+// ShockabsorberStatusInput checks the queue status for a submitted registration.
+//
+// It intentionally does not include URLReplay because status polling follows an
+// already-submitted time_ticket rather than replaying the register URL again.
+type ShockabsorberStatusInput struct {
+	Credentials ShockabsorberCredentials
+	TimeTicket  string
+}
+
+// ShockabsorberResponse is the flexible response envelope from shockabsorber.
+//
+// Body carries statuses such as WAIT, OK, or PROCESSED. Data is intentionally a
+// generic object because VT's nested registration result payloads vary by
+// outcome and still need more empirical examples.
+type ShockabsorberResponse struct {
+	Body string         `json:"body"`
+	Code int            `json:"code"`
+	Data map[string]any `json:"data"`
 }

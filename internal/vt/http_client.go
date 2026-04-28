@@ -15,6 +15,7 @@ import (
 const (
 	defaultBaseURL       = "https://classes.vt.edu"
 	defaultClientTimeout = 15 * time.Second
+	defaultCartName      = "default"
 )
 
 // ClientConfig configures a VT HTTP client at construction time.
@@ -162,6 +163,56 @@ func (c *Client) CartRead(ctx context.Context, authtoken string) (CartResponse, 
 	return out, nil
 }
 
+// CartAdd stages one CRN in VT's default registration cart.
+//
+// This is a VT write operation, not a read-only polling call. It only prepares
+// the cart; shockabsorber register is still required to submit the registration
+// to Banner. VT requires the cart named "default" for shockabsorber to process
+// the staged item.
+func (c *Client) CartAdd(ctx context.Context, input CartAddInput) (CartResponse, error) {
+	authtoken, err := requireValue("authtoken", input.Authtoken)
+	if err != nil {
+		return CartResponse{}, err
+	}
+	term, err := requireValue("term", input.Term)
+	if err != nil {
+		return CartResponse{}, err
+	}
+	crn, err := requireValue("CRN", input.CRN)
+	if err != nil {
+		return CartResponse{}, err
+	}
+	hours, err := requireValue("hours", input.Hours)
+	if err != nil {
+		return CartResponse{}, err
+	}
+	gradeMode, err := requireValue("grade mode", input.GradeMode)
+	if err != nil {
+		return CartResponse{}, err
+	}
+	regInfo, err := requireValue("registration info", input.RegInfo)
+	if err != nil {
+		return CartResponse{}, err
+	}
+
+	var out CartResponse
+	if err := c.doJSONP(ctx, "cart_add", url.Values{
+		"page":      {"sisproxy"},
+		"action":    {"cart_add"},
+		"term_code": {term},
+		"cart_name": {defaultCartName},
+		"crn":       {crn},
+		"hours":     {hours},
+		"gmod":      {gradeMode},
+		"reg_info":  {regInfo},
+		"authtoken": {authtoken},
+	}, &out); err != nil {
+		return CartResponse{}, err
+	}
+
+	return out, nil
+}
+
 // Preflight validates CRNs against the authenticated student's registration state.
 //
 // Preflight can surface prerequisite, conflict, restriction, and registration
@@ -192,6 +243,67 @@ func (c *Client) Preflight(ctx context.Context, authtoken, term string, crns []s
 		"authtoken": {authtoken},
 	}, &out); err != nil {
 		return PreflightResponse{}, err
+	}
+
+	return out, nil
+}
+
+// ShockabsorberRegister submits the staged default cart to VT's registration queue.
+//
+// This is the dangerous registration call. Callers must perform their own
+// safety checks first and must not blindly retry this method after an ambiguous
+// result; fresh studentdata is the source of truth for final state.
+func (c *Client) ShockabsorberRegister(ctx context.Context, input ShockabsorberRegisterInput) (ShockabsorberResponse, error) {
+	credentials, err := validateShockabsorberCredentials(input.Credentials)
+	if err != nil {
+		return ShockabsorberResponse{}, err
+	}
+	timeTicket, err := requireValue("time ticket", input.TimeTicket)
+	if err != nil {
+		return ShockabsorberResponse{}, err
+	}
+	urlReplay, err := requireValue("url replay", input.URLReplay)
+	if err != nil {
+		return ShockabsorberResponse{}, err
+	}
+
+	var out ShockabsorberResponse
+	if err := c.doFormJSON(ctx, "shockabsorber register", url.Values{
+		"page":        {"shockabsorber"},
+		"time_ticket": {timeTicket},
+		"action":      {"register"},
+		"cart_name":   {defaultCartName},
+		"url_replay":  {urlReplay},
+	}, shockabsorberForm(credentials), &out); err != nil {
+		return ShockabsorberResponse{}, err
+	}
+
+	return out, nil
+}
+
+// ShockabsorberStatus polls VT's registration queue for one submitted time ticket.
+//
+// Status polling is safe to repeat for the same submission. It must not be
+// confused with ShockabsorberRegister, which actually asks Banner to mutate the
+// student's schedule.
+func (c *Client) ShockabsorberStatus(ctx context.Context, input ShockabsorberStatusInput) (ShockabsorberResponse, error) {
+	credentials, err := validateShockabsorberCredentials(input.Credentials)
+	if err != nil {
+		return ShockabsorberResponse{}, err
+	}
+	timeTicket, err := requireValue("time ticket", input.TimeTicket)
+	if err != nil {
+		return ShockabsorberResponse{}, err
+	}
+
+	var out ShockabsorberResponse
+	if err := c.doFormJSON(ctx, "shockabsorber status", url.Values{
+		"page":        {"shockabsorber"},
+		"time_ticket": {timeTicket},
+		"action":      {"status"},
+		"cart_name":   {defaultCartName},
+	}, shockabsorberForm(credentials), &out); err != nil {
+		return ShockabsorberResponse{}, err
 	}
 
 	return out, nil
@@ -276,6 +388,35 @@ func (c *Client) doJSONP(ctx context.Context, operation string, query url.Values
 	return nil
 }
 
+// doFormJSON handles shockabsorber POSTs.
+//
+// shockabsorber is the odd VT subsystem: it takes operation parameters in the
+// query string, identity credentials in a form body, and returns plain JSON.
+// Keeping that request shape in one helper makes the dangerous registration
+// methods easier to audit.
+func (c *Client) doFormJSON(ctx context.Context, operation string, query url.Values, form url.Values, target any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL(query), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("build %s request: %w", operation, err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s request: %w", operation, err)
+	}
+	defer resp.Body.Close()
+
+	if err := checkStatus(operation, resp); err != nil {
+		return err
+	}
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("decode %s response: %w", operation, err)
+	}
+
+	return nil
+}
+
 func (c *Client) apiURL(query url.Values) string {
 	u := *c.baseURL
 	// VT multiplexes fose, sisproxy, and shockabsorber behind /api/ and chooses
@@ -320,4 +461,41 @@ func joinCRNs(crns []string) (string, error) {
 
 	// sisproxy preflight expects one comma-separated crn_list query value.
 	return strings.Join(trimmed, ","), nil
+}
+
+// validateShockabsorberCredentials trims and verifies every required form field.
+//
+// Missing identity fields usually turn into opaque shockabsorber failures, so
+// the client rejects them locally before making a dangerous request.
+func validateShockabsorberCredentials(credentials ShockabsorberCredentials) (ShockabsorberCredentials, error) {
+	authtoken, err := requireValue("authtoken", credentials.Authtoken)
+	if err != nil {
+		return ShockabsorberCredentials{}, err
+	}
+	personID, err := requireValue("person ID", credentials.PersonID)
+	if err != nil {
+		return ShockabsorberCredentials{}, err
+	}
+	personIDProof, err := requireValue("person ID proof", credentials.PersonIDProof)
+	if err != nil {
+		return ShockabsorberCredentials{}, err
+	}
+	return ShockabsorberCredentials{
+		Authtoken:     authtoken,
+		PersonID:      personID,
+		PersonIDProof: personIDProof,
+	}, nil
+}
+
+// shockabsorberForm builds the form body shared by register and status calls.
+//
+// _pers_real_id mirrors the browser request and currently uses the same opaque
+// person ID value exposed by studentdata.
+func shockabsorberForm(credentials ShockabsorberCredentials) url.Values {
+	return url.Values{
+		"authtoken":      {credentials.Authtoken},
+		"_pers_id":       {credentials.PersonID},
+		"_pers_id_proof": {credentials.PersonIDProof},
+		"_pers_real_id":  {credentials.PersonID},
+	}
 }
