@@ -21,7 +21,10 @@ type FoseResult struct {
 	Stat      string `json:"stat"`
 	Total     string `json:"total"`
 	HoursHTML string `json:"hours_html"`
-	SrcDB     string `json:"srcdb"`
+	// CartOptions is VT's JSON-encoded cart option payload. Some sections omit
+	// hours_html and only expose cart_add values such as credit hours here.
+	CartOptions string `json:"cart_opts"`
+	SrcDB       string `json:"srcdb"`
 }
 
 // StudentData is the minimal studentdata shape SeatHawk needs initially.

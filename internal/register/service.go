@@ -297,14 +297,74 @@ var leadingHoursPattern = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)`)
 // creditHoursFromSection extracts VT's cart_add hours value from fose data.
 //
 // cart_add requires a plain value such as "3", but fose exposes human text such
-// as "3 Credit Hours". If that text is missing or malformed, the safe behavior
-// is to stop before writing to the VT cart.
+// as "3 Credit Hours" for some sections. Other sections omit hours_html and put
+// the selected/default value inside the JSON-encoded cart_opts.credit_hrs
+// payload. If neither source yields a value, the safe behavior is to stop before
+// writing to the VT cart.
 func creditHoursFromSection(section vt.FoseResult) (string, error) {
 	match := leadingHoursPattern.FindStringSubmatch(section.HoursHTML)
-	if len(match) < 2 {
-		return "", fmt.Errorf("section credit hours could not be parsed")
+	if len(match) >= 2 {
+		return match[1], nil
 	}
-	return match[1], nil
+
+	hours, err := defaultCartOptionValue(section.CartOptions, "credit_hrs")
+	if err != nil {
+		return "", fmt.Errorf("parse section cart options: %w", err)
+	}
+	if hours != "" {
+		return hours, nil
+	}
+	return "", fmt.Errorf("section credit hours could not be parsed")
+}
+
+type foseCartOptions struct {
+	CreditHours cartOptionGroup `json:"credit_hrs"`
+}
+
+type cartOptionGroup struct {
+	Options []cartOption `json:"options"`
+}
+
+type cartOption struct {
+	Value    string `json:"value"`
+	Default  bool   `json:"default"`
+	Selected string `json:"selected"`
+}
+
+// defaultCartOptionValue extracts the browser-selected cart option from cart_opts.
+//
+// VT serializes cart_opts as a JSON string inside the fose result instead of as
+// nested JSON. The registration flow only needs credit_hrs today, but this
+// helper keeps the selected/default option rules in one place.
+func defaultCartOptionValue(raw string, group string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+
+	var options foseCartOptions
+	if err := json.Unmarshal([]byte(raw), &options); err != nil {
+		return "", err
+	}
+
+	var optionGroup cartOptionGroup
+	switch group {
+	case "credit_hrs":
+		optionGroup = options.CreditHours
+	default:
+		return "", fmt.Errorf("unsupported cart option group %q", group)
+	}
+
+	for _, option := range optionGroup.Options {
+		value := strings.TrimSpace(option.Value)
+		if value == "" {
+			continue
+		}
+		if option.Default || strings.EqualFold(strings.TrimSpace(option.Selected), "selected") {
+			return value, nil
+		}
+	}
+
+	return "", nil
 }
 
 // preflightBlocked reports whether VT preflight returned a real blocker.

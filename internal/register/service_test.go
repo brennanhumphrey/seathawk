@@ -156,6 +156,37 @@ func TestAttemptAddPreflightBlockStopsBeforeCart(t *testing.T) {
 	}
 }
 
+func TestAttemptAddUsesCartOptionsWhenHoursHTMLIsMissing(t *testing.T) {
+	db := storetest.NewDB(t)
+	now := fixedRegisterNow()
+	saveRegisterTestSession(t, db, now)
+	watchRow := saveRegisterTestWatch(t, db, watch.ModeAdd, now)
+	client := validRegisterClient()
+	client.studentData = []vt.StudentData{
+		studentDataWithRegistration(false),
+		studentDataWithRegistration(true),
+	}
+	client.search.Results[0].HoursHTML = ""
+	client.search.Results[0].CartOptions = `{"credit_hrs":{"cartField":"p_hours","enabled":true,"options":[{"value":"3","label":"3","default":true,"selected":"selected"}]}}`
+
+	result, err := Service{
+		DB:                 db,
+		VTClient:           client,
+		Now:                func() time.Time { return now },
+		StatusPollInterval: time.Nanosecond,
+		MaxStatusPolls:     2,
+	}.AttemptAdd(context.Background(), AttemptAddInput{WatchID: watchRow.ID})
+	if err != nil {
+		t.Fatalf("AttemptAdd returned error: %v", err)
+	}
+	if result.Outcome != OutcomeConfirmed {
+		t.Fatalf("outcome = %s, want confirmed", result.Outcome)
+	}
+	if client.cartAddCalls != 1 {
+		t.Fatalf("cartAddCalls = %d, want 1", client.cartAddCalls)
+	}
+}
+
 func TestAttemptAddUnsupportedSwapWatch(t *testing.T) {
 	db := storetest.NewDB(t)
 	now := fixedRegisterNow()
@@ -169,6 +200,60 @@ func TestAttemptAddUnsupportedSwapWatch(t *testing.T) {
 	}.AttemptAdd(context.Background(), AttemptAddInput{WatchID: watchRow.ID})
 	if err == nil {
 		t.Fatal("AttemptAdd returned nil error for swap watch")
+	}
+}
+
+func TestCreditHoursFromSection(t *testing.T) {
+	tests := []struct {
+		name    string
+		section vt.FoseResult
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "hours html",
+			section: vt.FoseResult{HoursHTML: "3 Credit Hours"},
+			want:    "3",
+		},
+		{
+			name: "cart options",
+			section: vt.FoseResult{
+				CartOptions: `{"credit_hrs":{"options":[{"value":"3","default":true,"selected":"selected"}]}}`,
+			},
+			want: "3",
+		},
+		{
+			name: "missing",
+			section: vt.FoseResult{
+				CartOptions: `{"grade_mode":{"options":[{"value":"N","default":true}]}}`,
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed cart options",
+			section: vt.FoseResult{
+				CartOptions: `{`,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := creditHoursFromSection(tt.section)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("creditHoursFromSection returned nil error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("creditHoursFromSection returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("creditHoursFromSection = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
