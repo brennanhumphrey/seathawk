@@ -2,28 +2,39 @@ package cli
 
 import (
 	"fmt"
+	"log"
 
+	"github.com/brennanhumphrey/seathawk/internal/daemon"
+	"github.com/brennanhumphrey/seathawk/internal/vt"
+	watchsvc "github.com/brennanhumphrey/seathawk/internal/watch"
 	"github.com/spf13/cobra"
 )
 
 func newRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Start SeatHawk",
+		Short: "Run the read-only watch polling daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The run command is the daemon boot path. For Phase 1 it only
-			// proves that config and persistence are wired correctly.
-			cfg, _, cleanup, err := openAppDB(cmd)
+			cfg, db, cleanup, err := openAppDB(cmd)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
 
-			fmt.Println("seathawk booted successfully")
-			fmt.Printf("config: %s\n", cfg.ConfigPath)
-			fmt.Printf("database: %s\n", cfg.DatabasePath)
+			client, err := vt.NewClient(vt.ClientConfig{})
+			if err != nil {
+				return fmt.Errorf("create VT client: %w", err)
+			}
 
-			return nil
+			logger := log.New(cmd.ErrOrStderr(), "seathawk: ", log.LstdFlags)
+			logger.Printf("config=%s", cfg.ConfigPath)
+			logger.Printf("database=%s", cfg.DatabasePath)
+
+			runner := daemon.Runner{
+				Poller: watchsvc.Service{DB: db, VTClient: client},
+				Logger: logger,
+			}
+			return runner.Run(cmd.Context())
 		},
 	}
 
