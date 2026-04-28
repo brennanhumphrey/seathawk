@@ -4,12 +4,12 @@ SeatHawk is a single-user Go CLI for monitoring Virginia Tech course seats and,
 eventually, attempting registration with the user's own local VT session.
 
 Current status: the app can import/validate a VT session, create live-checked
-local watch definitions, and run a manual read-only poll pass. It does **not**
-poll continuously or register/drop courses yet.
+local watch definitions, and run a continuous read-only polling daemon. It does
+**not** register/drop courses yet.
 
 ## Quick Start
 
-Run the CLI:
+Run the daemon:
 
 ```sh
 go run ./cmd/seathawk run
@@ -20,6 +20,8 @@ This creates the default config and SQLite database under:
 ```text
 ~/.config/seathawk/
 ```
+
+The daemon keeps running until you stop it with Ctrl-C.
 
 ## Import A VT Session
 
@@ -101,7 +103,7 @@ List watches:
 go run ./cmd/seathawk watch list
 ```
 
-Run one read-only poll pass for watches whose `next_poll_at` time has arrived:
+Run one read-only manual poll pass for watches whose `next_poll_at` time has arrived:
 
 ```sh
 go run ./cmd/seathawk watch poll
@@ -115,6 +117,24 @@ go run ./cmd/seathawk watch poll --all
 
 Polling refreshes local watch metadata such as `last_seen_stat` and
 `next_poll_at`. It only reads VT `studentdata` and `fose`; it does not add a
+class to the cart, preflight registration, register, drop, or swap anything.
+
+## Run The Daemon
+
+After importing a valid session and creating watches, start continuous read-only
+polling:
+
+```sh
+go run ./cmd/seathawk run
+```
+
+The daemon polls once immediately, then repeats on SeatHawk's default poll
+interval. Each pass respects `next_poll_at`, so active watches are only checked
+when they are due. Logs are written to stderr and include the config path,
+database path, checked watch count, watch IDs, observed section status, and any
+per-watch errors.
+
+Stop the daemon with Ctrl-C. The daemon is still read-only: it does not add a
 class to the cart, preflight registration, register, drop, or swap anything.
 
 Pause and resume watches:
@@ -158,14 +178,15 @@ CLI command
 ```
 
 Session commands construct a VT client because they validate the copied
-authtoken against `studentdata`. Watch creation and manual polling also
-construct a VT client, but only for read-only checks: `studentdata` for current
-registration state and `fose` search for CRN existence/current section status.
+authtoken against `studentdata`. Watch creation, manual polling, and the daemon
+also construct a VT client, but only for read-only checks: `studentdata` for
+current registration state and `fose` search for CRN existence/current section
+status.
 
 The `watches` table has fields such as `last_seen_stat`, `next_poll_at`, and
 `last_attempt_at`. Watch creation fills the initial section status and first
-poll time. `watch poll` refreshes the read-only scheduler metadata that a later
-daemon loop will use. Registration-attempt history still comes later.
+poll time. `watch poll` and `run` refresh the read-only scheduler metadata.
+Registration-attempt history still comes later.
 
 ## Verification
 
