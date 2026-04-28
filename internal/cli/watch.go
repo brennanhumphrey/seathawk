@@ -13,7 +13,7 @@ func newWatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Manage local registration watches",
-		Long:  "Manage local watch definitions. Creation and polling may contact VT for read-only checks, but watch commands do not attempt registration.",
+		Long:  "Manage local watch definitions. Creation and polling may contact VT for read-only checks, but watch commands do not attempt registration. Use register attempt for an explicit VT registration attempt.",
 	}
 
 	cmd.AddCommand(newWatchAddCmd())
