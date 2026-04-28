@@ -211,11 +211,39 @@ func UpdateWatchEvaluation(ctx context.Context, db *sql.DB, id int64, lastSeenSt
 	return nil
 }
 
+// UpdateWatchLastAttemptAt records when SeatHawk last tried to register a watch.
+//
+// This is separate from UpdateWatchEvaluation because read-only polling and
+// write-side registration attempts are different scheduler events. Keeping the
+// SQL helpers separate makes call sites more explicit about which kind of state
+// they are changing.
+func UpdateWatchLastAttemptAt(ctx context.Context, db *sql.DB, id int64, attemptedAt time.Time, updatedAt time.Time) error {
+	result, err := db.ExecContext(ctx, `
+		UPDATE watches
+		SET
+			last_attempt_at = ?,
+			updated_at = ?
+		WHERE id = ?
+	`, attemptedAt.UTC(), updatedAt.UTC(), id)
+	if err != nil {
+		return fmt.Errorf("update watch last attempt: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read watch last attempt update count: %w", err)
+	}
+	if rows == 0 {
+		return ErrNoWatch
+	}
+	return nil
+}
+
 // DeleteWatch hard-deletes one watch row.
 //
-// This is acceptable while watches have no attempt history. Once attempts are
-// recorded, higher layers should prefer disabling or archiving so audit history
-// remains coherent.
+// Watches with attempt history are protected by the attempts foreign key. If a
+// user wants to stop future work on an attempted watch, higher layers should
+// disable it instead of deleting the audit trail.
 func DeleteWatch(ctx context.Context, db *sql.DB, id int64) error {
 	result, err := db.ExecContext(ctx, `DELETE FROM watches WHERE id = ?`, id)
 	if err != nil {
