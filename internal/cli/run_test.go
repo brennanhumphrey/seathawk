@@ -21,9 +21,18 @@ func TestRunCommandMetadata(t *testing.T) {
 		t.Fatalf("Use = %q, want run", cmd.Use)
 	}
 	short := strings.ToLower(cmd.Short)
-	for _, want := range []string{"read-only", "polling", "daemon"} {
+	for _, want := range []string{"daemon", "auto-registration"} {
 		if !strings.Contains(short, want) {
 			t.Fatalf("Short = %q, want to contain %q", cmd.Short, want)
 		}
+	}
+	long := strings.ToLower(cmd.Long)
+	for _, want := range []string{"read-only", "--auto-register", "register attempt"} {
+		if !strings.Contains(long, want) {
+			t.Fatalf("Long = %q, want to contain %q", cmd.Long, want)
+		}
+	}
+	if cmd.Flags().Lookup("auto-register") == nil {
+		t.Fatal("run command does not define --auto-register")
 	}
 }
