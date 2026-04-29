@@ -4,9 +4,10 @@ SeatHawk is a single-user Go CLI for monitoring Virginia Tech course seats and,
 eventually, attempting registration with the user's own local VT session.
 
 Current status: the app can import/validate a VT session, create live-checked
-local watch definitions, run a continuous read-only polling daemon, and run an
-explicit manual single-CRN add attempt. The daemon does **not** register/drop
-courses automatically yet.
+local watch definitions, run a continuous polling daemon, run an explicit
+manual single-CRN add attempt, and optionally let the daemon auto-attempt
+eligible add watches. Daemon registration is off unless `--auto-register` is
+passed.
 
 ## Quick Start
 
@@ -122,9 +123,9 @@ class to the cart, preflight registration, register, drop, or swap anything.
 
 ## Attempt Manual Registration
 
-Manual registration attempts are separate from polling. This is intentional:
-the first VT write path should be explicit, auditable, and easy to test before
-any daemon auto-registration behavior exists.
+Manual registration attempts are available separately from daemon polling. This
+is useful for proving a watch and session before allowing unattended
+auto-registration.
 
 Attempt one existing add watch:
 
@@ -151,10 +152,10 @@ confirms the final state with fresh `studentdata`. Fresh `studentdata` is the
 source of truth; shockabsorber text is treated as diagnostic output, not final
 proof.
 
-SeatHawk records attempt audit rows locally. On confirmed success, the watch is
-disabled so it will not be attempted again. Failed or ambiguous attempts keep
-the watch active, but update `last_attempt_at`. Cart cleanup is intentionally
-not automatic yet.
+SeatHawk records attempt audit rows locally. On confirmed manual success, the
+watch is disabled so it will not be attempted again. Failed or ambiguous manual
+attempts keep the watch active, but update `last_attempt_at`. Cart cleanup is
+intentionally not automatic yet.
 
 ## Run The Daemon
 
@@ -171,8 +172,27 @@ when they are due. Logs are written to stderr and include the config path,
 database path, checked watch count, watch IDs, observed section status, and any
 per-watch errors.
 
-Stop the daemon with Ctrl-C. The daemon is still read-only: it does not add a
-class to the cart, preflight registration, register, drop, or swap anything.
+Stop the daemon with Ctrl-C. Without extra flags, the daemon is read-only: it
+does not add a class to the cart, preflight registration, register, drop, or
+swap anything.
+
+To allow unattended registration attempts for eligible add watches, start the
+daemon with:
+
+```sh
+go run ./cmd/seathawk run --auto-register
+```
+
+Auto-registration only applies to add watches. Swap watches remain read-only in
+this phase. When auto mode sees an active add watch that is open and whose
+registration window is ready, it hands the watch to the same registration flow
+used by `register attempt`. That flow still performs fresh `studentdata`,
+`fose`, and `preflight` checks before writing to VT.
+
+Confirmed automatic success disables the watch. Failed or ambiguous automatic
+attempts also disable the watch so SeatHawk cannot repeatedly submit VT writes
+without manual review. Full sections and not-yet-open registration windows keep
+polling normally.
 
 Pause and resume watches:
 
@@ -198,6 +218,7 @@ internal/session/  VT session import and validation workflow
 internal/vt/       VT protocol client and response parsing
 internal/watch/    Local watch validation and workflow rules
 internal/register/ Explicit manual registration-attempt orchestration
+internal/automation/ Daemon pass coordination and auto-attempt decisions
 docs/              VT API reference and planning notes
 ```
 
@@ -210,7 +231,7 @@ does SQLite reads/writes.
 ```text
 CLI command
   -> config.Load + store.Open + store.Migrate
-  -> session.Service, watch.Service, or register.Service
+  -> session.Service, watch.Service, register.Service, or automation.Service
   -> store helpers
   -> local SQLite database
 ```
@@ -226,6 +247,8 @@ The `watches` table has fields such as `last_seen_stat`, `next_poll_at`, and
 poll time. `watch poll` and `run` refresh the read-only scheduler metadata.
 `register attempt` reuses the same watch evaluation rules before performing the
 VT write sequence and records phase-level history in the `attempts` table.
+`run --auto-register` connects polling to that same registration service only
+after the daemon observes an open, registration-ready add watch.
 
 ## Verification
 
