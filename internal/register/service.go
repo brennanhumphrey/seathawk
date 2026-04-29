@@ -1,8 +1,10 @@
-// Package register owns explicit, user-triggered VT registration attempts.
+// Package register owns explicit VT registration attempts for one watch.
 //
 // This package is intentionally separate from watch polling. Watches describe
 // local intent and polling observes VT state, while register performs the
-// write-side workflow that can actually change a student's schedule.
+// write-side workflow that can actually change a student's schedule. Manual CLI
+// commands and opt-in automation both call this package with a specific watch
+// ID; neither path should duplicate cart or shockabsorber logic.
 package register
 
 import (
@@ -40,7 +42,7 @@ const (
 	phaseConfirm   = "confirm"
 )
 
-// AttemptOutcome is the normalized result of one manual registration attempt.
+// AttemptOutcome is the normalized result of one registration attempt.
 type AttemptOutcome string
 
 const (
@@ -75,8 +77,8 @@ type VTClient interface {
 // Service coordinates one explicit registration attempt with VT and SQLite.
 //
 // It does not run in the background and does not select watches by schedule.
-// The CLI passes a specific watch ID so the user remains in control while this
-// dangerous path is first proven.
+// Callers pass a specific watch ID, which keeps scheduling decisions outside
+// the dangerous cart/shockabsorber workflow.
 type Service struct {
 	DB       *sql.DB
 	VTClient VTClient
