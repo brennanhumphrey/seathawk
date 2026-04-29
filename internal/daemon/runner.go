@@ -1,8 +1,8 @@
 // Package daemon owns SeatHawk's process-level polling loop.
 //
 // The daemon coordinates timing, logging, and shutdown. It deliberately delegates
-// VT/domain decisions to internal/watch so this package never grows registration
-// behavior of its own.
+// VT/domain decisions to internal/automation so this package never grows
+// registration behavior of its own.
 package daemon
 
 import (
@@ -11,12 +11,13 @@ import (
 	"log"
 	"time"
 
+	"github.com/brennanhumphrey/seathawk/internal/automation"
 	"github.com/brennanhumphrey/seathawk/internal/watch"
 )
 
-// Poller is the watch polling behavior the daemon needs.
-type Poller interface {
-	PollDue(ctx context.Context, input watch.PollInput) (watch.PollReport, error)
+// Processor is the per-pass automation behavior the daemon needs.
+type Processor interface {
+	ProcessDue(ctx context.Context, input automation.ProcessInput) (automation.ProcessReport, error)
 }
 
 // Logger is the logging behavior the daemon needs.
@@ -24,30 +25,35 @@ type Logger interface {
 	Printf(format string, args ...any)
 }
 
-// Runner repeatedly performs read-only watch polling until its context ends.
+// Runner repeatedly performs daemon work until its context ends.
+//
+// By default the work is read-only polling. When AutoRegister is true, Runner
+// passes that opt-in to the automation layer, which may attempt eligible add
+// watches through the registration service.
 type Runner struct {
-	Poller   Poller
-	Logger   Logger
-	Interval time.Duration
-	Sleep    func(context.Context, time.Duration) error
+	Processor    Processor
+	AutoRegister bool
+	Logger       Logger
+	Interval     time.Duration
+	Sleep        func(context.Context, time.Duration) error
 }
 
-// Run starts the continuous read-only polling loop.
+// Run starts the continuous daemon loop.
 //
 // It polls once immediately, then sleeps for the configured interval before
-// polling again. Poll pass errors are logged and retried later because expired
-// sessions, VT outages, and transient network failures should not crash the
-// daemon process.
+// processing again. Pass-level errors are logged and retried later because
+// expired sessions, VT outages, and transient network failures should not crash
+// the daemon process.
 func (r Runner) Run(ctx context.Context) error {
-	if r.Poller == nil {
-		return fmt.Errorf("daemon poller is nil")
+	if r.Processor == nil {
+		return fmt.Errorf("daemon processor is nil")
 	}
 
 	logger := r.logger()
 	interval := r.interval()
 	sleep := r.sleep()
 
-	logger.Printf("daemon starting interval=%s", interval)
+	logger.Printf("daemon starting interval=%s auto_register=%t", interval, r.AutoRegister)
 	for {
 		// Treat cancellation as normal shutdown. Ctrl-C/SIGTERM should stop the
 		// daemon without surfacing an error to the CLI.
@@ -57,7 +63,7 @@ func (r Runner) Run(ctx context.Context) error {
 
 		// The daemon intentionally uses the due-watch path only. Forced polling
 		// stays behind `watch poll --all` so unattended runs respect next_poll_at.
-		report, err := r.Poller.PollDue(ctx, watch.PollInput{})
+		report, err := r.Processor.ProcessDue(ctx, automation.ProcessInput{AutoRegister: r.AutoRegister})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -66,7 +72,7 @@ func (r Runner) Run(ctx context.Context) error {
 			// operational states. Log them and retry on the next interval.
 			logger.Printf("poll error: %v", err)
 		} else {
-			logPollReport(logger, report)
+			logProcessReport(logger, report)
 		}
 
 		// Sleep after every pass, including empty or failed passes, so the daemon
@@ -117,41 +123,64 @@ func defaultSleep(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-// logPollReport writes a compact daemon-oriented summary of one polling pass.
-func logPollReport(logger Logger, report watch.PollReport) {
-	checkedAt := report.CheckedAt.UTC().Format(time.RFC3339)
-	if len(report.Results) == 0 {
+// logProcessReport writes a compact daemon-oriented summary of one pass.
+func logProcessReport(logger Logger, report automation.ProcessReport) {
+	checkedAt := report.PollReport.CheckedAt.UTC().Format(time.RFC3339)
+	if len(report.PollReport.Results) == 0 {
 		logger.Printf("poll checked_at=%s watches=0", checkedAt)
-		return
+	} else {
+		logger.Printf("poll checked_at=%s watches=%d", checkedAt, len(report.PollReport.Results))
+		for _, result := range report.PollReport.Results {
+			logPollResult(logger, result)
+		}
 	}
 
-	logger.Printf("poll checked_at=%s watches=%d", checkedAt, len(report.Results))
-	for _, result := range report.Results {
-		status := string(result.Evaluation.SectionStatus)
-		if status == "" && result.Watch.LastSeenStat.Valid {
-			status = result.Watch.LastSeenStat.String
-		}
+	for _, attempt := range report.Attempts {
+		logAttemptResult(logger, attempt)
+	}
+}
 
-		if result.Err != nil {
-			logger.Printf("poll watch id=%d active=%t mode=%s term=%s add_crn=%s status=%s error=%v",
-				result.Watch.ID,
-				result.Watch.Active,
-				result.Watch.Mode,
-				result.Watch.Term,
-				result.Watch.AddCRN,
-				status,
-				result.Err,
-			)
-			continue
-		}
+// logPollResult writes one watch polling result.
+func logPollResult(logger Logger, result watch.PollResult) {
+	status := string(result.Evaluation.SectionStatus)
+	if status == "" && result.Watch.LastSeenStat.Valid {
+		status = result.Watch.LastSeenStat.String
+	}
 
-		logger.Printf("poll watch id=%d active=%t mode=%s term=%s add_crn=%s status=%s",
+	if result.Err != nil {
+		logger.Printf("poll watch id=%d active=%t mode=%s term=%s add_crn=%s status=%s error=%v",
 			result.Watch.ID,
 			result.Watch.Active,
 			result.Watch.Mode,
 			result.Watch.Term,
 			result.Watch.AddCRN,
 			status,
+			result.Err,
 		)
+		return
 	}
+
+	logger.Printf("poll watch id=%d active=%t mode=%s term=%s add_crn=%s status=%s",
+		result.Watch.ID,
+		result.Watch.Active,
+		result.Watch.Mode,
+		result.Watch.Term,
+		result.Watch.AddCRN,
+		status,
+	)
+}
+
+// logAttemptResult writes one automatic registration attempt result.
+func logAttemptResult(logger Logger, attempt automation.AttemptResult) {
+	if attempt.Err != nil {
+		logger.Printf("attempt watch id=%d error=%v", attempt.Watch.ID, attempt.Err)
+		return
+	}
+
+	logger.Printf("attempt watch id=%d outcome=%s registered=%t message=%q",
+		attempt.Watch.ID,
+		attempt.Result.Outcome,
+		attempt.Result.Registered,
+		attempt.Result.Message,
+	)
 }
